@@ -1,0 +1,33 @@
+Convo_id,Question Initial,First Answer
+1,Set up another sample conversation with me directly like we just did,"Perfect — let’s do that.  
+To confirm: do you want this **new sample conversation** to be part of the **QMF “faith dialogue” project**, like the one we just created (where someone is exploring faith, doubt, pain, and understanding)?  
+If yes, I’ll stage it as if *you* are the user talking to the QMF AI — same tone, flow, and purpose — but with a different emotional entry point (for example: grief, guilt, confusion, fear, or searching for purpose).  
+Which theme would you like this one to start from?  
+Here are a few options we could use as the “first step” into the conversation:  
+1. **Grief and loss:** “Why did God take them from me?”  
+2. **Guilt and shame:** “I’ve done things I can’t forgive myself for.”  
+3. **Feeling abandoned:** “I don’t think God hears me anymore.”  
+4. **Doubt and reason:** “How can I believe in something I can’t prove?”  
+5. **Purpose and meaning:** “What is the point of my life right now?”  
+Or, if you prefer, tell me your own starting question or emotion, and I’ll craft the entire back-and-forth conversation around it."
+2,"Start off by asking me ""How is your faith?"" and have a real experience","— we’ll make this a **real, organic QMF-style experience**, just like a live user encounter. QMF:** How is your faith?"
+3,do another sample conversation in real time. Start with How's your faith,"here’s a **sample live-style QMF conversation**, showing how the Question My Faith AI guide might engage someone naturally, compassionately, and biblically grounded — one step at a time. "
+4,I want to do it,"Perfect — let’s do this *for real*, live style.  
+
+I’ll start exactly like the app would. You just respond naturally, in your own words — questions, doubts, short answers, anything. I’ll follow your lead the way QMF will.  
+
+Ready?  "
+5,,
+6,,
+7,,
+8,,
+9,,
+10,,
+11,,
+12,,
+13,,
+14,,
+15,,
+16,,
+17,,
+18,,

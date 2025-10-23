@@ -1,0 +1,600 @@
+{\rtf1\ansi\ansicpg1252\cocoartf2822
+\cocoatextscaling0\cocoaplatform0{\fonttbl\f0\fswiss\fcharset0 Helvetica;}
+{\colortbl;\red255\green255\blue255;}
+{\*\expandedcolortbl;;}
+\margl1440\margr1440\vieww11520\viewh8400\viewkind0
+\pard\tx720\tx1440\tx2160\tx2880\tx3600\tx4320\tx5040\tx5760\tx6480\tx7200\tx7920\tx8640\pardirnatural\partightenfactor0
+
+\f0\fs24 \cf0 You are Cursor. We already have the Next.js app from earlier ("question-my-faith"). Please ADD Supabase auth + database persistence exactly as specified below.\
+\
+# Overview\
+- Keep the app public. Users can ask anonymously.\
+- If a user logs in (free account), we associate chats to their `user_id`.\
+- If not logged in, we generate a durable `guest_id` cookie and store chats under that `guest_id`.\
+- Provide a simple **Login** page (email magic-link + Google OAuth) and a **My Profile** page.\
+- Persist all chats (sessions + messages) in Supabase.\
+- All DB access happens **server-side** (Next.js route handlers) using the **service role key**; the browser never touches the database directly.\
+- Keep our existing OpenAI `/api/ask` implementation and extend it to save chat turns.\
+\
+# 0) Install deps\
+- npm i @supabase/supabase-js jose-cookie\
+  (We use `jose-cookie` to sign the `guest_id` cookie.)\
+\
+# 1) ENV VARS\
+Create/extend `.env.local` (examples \'97 fill with real values):\
+\
+OPENAI_API_KEY=sk-REPLACE\
+VECTOR_STORE_ID=vs_REPLACE\
+SYSTEM_PROMPT=You are a thoughtful, respectful, and concise Q&A assistant for a non-profit project called "Question My Faith." Answer with empathy, cite retrieved passages when helpful, and say when something isn't known.\
+\
+# Supabase (Project Settings \uc0\u8594  API)\
+SUPABASE_URL=https://YOUR-PROJECT.supabase.co\
+SUPABASE_ANON_KEY=eyJhbGciOiJI... (anon)\
+SUPABASE_SERVICE_ROLE_KEY=eyJhbGciOiJI... (service role; SERVER ONLY)\
+\
+# Cookie signing key for guest_id (32+ random bytes base64)\
+QMF_COOKIE_SECRET_BASE64=REPLACE_WITH_BASE64_RANDOM\
+\
+# 2) DATABASE (SQL)\
+Create a migration file at `supabase/migrations/001_qmf.sql` with:\
+\
+-- Enable pgcrypto if not enabled\
+create extension if not exists pgcrypto;\
+\
+-- Profiles (mirrors auth.users, one row per user)\
+create table if not exists public.profiles (\
+  user_id uuid primary key,\
+  email text,\
+  display_name text,\
+  avatar_url text,\
+  bio text,\
+  created_at timestamptz not null default now(),\
+  updated_at timestamptz not null default now()\
+);\
+\
+-- Chat sessions (user OR guest)\
+create table if not exists public.chat_sessions (\
+  id uuid primary key default gen_random_uuid(),\
+  user_id uuid references public.profiles(user_id) on delete set null,\
+  guest_id text, -- signed random id (cookie)\
+  title text,\
+  created_at timestamptz not null default now()\
+);\
+\
+-- Chat messages\
+create table if not exists public.chat_messages (\
+  id bigserial primary key,\
+  session_id uuid not null references public.chat_sessions(id) on delete cascade,\
+  role text not null check (role in ('user','assistant')),\
+  content text not null,\
+  created_at timestamptz not null default now()\
+);\
+\
+-- RLS: We will route all CRUD via server (service role), but enable RLS with safe defaults.\
+alter table public.profiles enable row level security;\
+alter table public.chat_sessions enable row level security;\
+alter table public.chat_messages enable row level security;\
+\
+-- Minimal policies (only authenticated users can see their own rows when using anon/service appropriately).\
+-- Our app server uses service role (bypasses RLS), but these serve as safety defaults.\
+\
+create policy "profiles_self"\
+  on public.profiles for select using (auth.uid() = user_id);\
+\
+create policy "profiles_self_upd"\
+  on public.profiles for update using (auth.uid() = user_id);\
+\
+create policy "sessions_by_user"\
+  on public.chat_sessions for select using (auth.uid() = user_id);\
+\
+create policy "messages_by_user"\
+  on public.chat_messages for select using (\
+    exists(select 1 from public.chat_sessions s where s.id = session_id and s.user_id = auth.uid())\
+  );\
+\
+-- (No insert policies needed for client because inserts happen via server with service role)\
+\
+# 3) SUPABASE HELPERS\
+Create `lib/supabaseServer.ts` and `lib/supabaseTypes.ts`.\
+\
+--- FILE: lib/supabaseTypes.ts\
+export type Profile = \{\
+  user_id: string;\
+  email: string | null;\
+  display_name: string | null;\
+  avatar_url: string | null;\
+  bio: string | null;\
+  created_at: string;\
+  updated_at: string;\
+\};\
+\
+export type ChatSession = \{\
+  id: string;\
+  user_id: string | null;\
+  guest_id: string | null;\
+  title: string | null;\
+  created_at: string;\
+\};\
+\
+export type ChatMessage = \{\
+  id: number;\
+  session_id: string;\
+  role: 'user' | 'assistant';\
+  content: string;\
+  created_at: string;\
+\};\
+\
+--- FILE: lib/supabaseServer.ts\
+import \{ createClient \} from "@supabase/supabase-js";\
+\
+const supabaseUrl = process.env.SUPABASE_URL!;\
+const serviceRoleKey = process.env.SUPABASE_SERVICE_ROLE_KEY!;\
+\
+// SERVER-ONLY client using the service role key (bypasses RLS). Do NOT expose client with this key to browser.\
+export function getServiceSupabase() \{\
+  return createClient(supabaseUrl, serviceRoleKey, \{\
+    auth: \{ persistSession: false \}\
+  \});\
+\}\
+\
+# 4) GUEST COOKIE UTIL\
+Create `lib/guest.ts`:\
+\
+--- FILE: lib/guest.ts\
+import \{ cookies \} from "next/headers";\
+import \{ SignJWT, jwtVerify \} from "jose";\
+import \{ randomBytes \} from "crypto";\
+\
+const secret = Buffer.from(process.env.QMF_COOKIE_SECRET_BASE64 || "", "base64");\
+const COOKIE_NAME = "qmf_guest";\
+const TTL_DAYS = 365;\
+\
+export async function getOrCreateGuestId(): Promise<string> \{\
+  const store = cookies();\
+  const existing = store.get(COOKIE_NAME)?.value;\
+  if (existing) \{\
+    try \{\
+      const \{ payload \} = await jwtVerify(existing, secret);\
+      return String(payload.gid);\
+    \} catch \{\}\
+  \}\
+  const gid = randomBytes(16).toString("hex");\
+  const token = await new SignJWT(\{ gid \})\
+    .setProtectedHeader(\{ alg: "HS256", typ: "JWT" \})\
+    .setExpirationTime(`$\{TTL_DAYS\}d`)\
+    .sign(secret);\
+\
+  store.set(COOKIE_NAME, token, \{\
+    httpOnly: true,\
+    sameSite: "lax",\
+    secure: true,\
+    path: "/",\
+    maxAge: TTL_DAYS * 24 * 60 * 60\
+  \});\
+  return gid;\
+\}\
+\
+# 5) AUTH PAGES (OPTIONAL LOGIN)\
+Create a minimal email magic-link + Google OAuth UI.\
+\
+--- FILE: app/login/page.tsx\
+"use client";\
+\
+import \{ useState \} from "react";\
+import \{ createClient \} from "@supabase/supabase-js";\
+\
+const supabase = createClient(\
+  process.env.NEXT_PUBLIC_SUPABASE_URL || process.env.SUPABASE_URL!,\
+  process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY || process.env.SUPABASE_ANON_KEY!\
+);\
+\
+export default function LoginPage() \{\
+  const [email, setEmail] = useState("");\
+  const [sent, setSent] = useState(false);\
+\
+  async function signInWithMagicLink(e: React.FormEvent) \{\
+    e.preventDefault();\
+    const \{ error \} = await supabase.auth.signInWithOtp(\{ email, options: \{ emailRedirectTo: `$\{location.origin\}/profile` \}\});\
+    if (!error) setSent(true);\
+    else alert(error.message);\
+  \}\
+\
+  async function signInWithGoogle() \{\
+    const \{ data, error \} = await supabase.auth.signInWithOAuth(\{\
+      provider: "google",\
+      options: \{ redirectTo: `$\{location.origin\}/profile` \}\
+    \});\
+    if (error) alert(error.message);\
+  \}\
+\
+  return (\
+    <div className="min-h-screen flex items-center justify-center p-6">\
+      <div className="w-full max-w-md bg-white/90 rounded-2xl p-6 shadow border">\
+        <h1 className="text-xl font-semibold mb-4">Sign in (optional)</h1>\
+\
+        <form onSubmit=\{signInWithMagicLink\} className="space-y-3">\
+          <input\
+            className="w-full border rounded px-3 py-2"\
+            placeholder="Email address"\
+            type="email"\
+            value=\{email\}\
+            onChange=\{(e)=>setEmail(e.target.value)\}\
+            required\
+          />\
+          <button className="w-full bg-black text-white rounded py-2">Send magic link</button>\
+        </form>\
+\
+        <div className="my-4 text-center text-sm text-gray-500">or</div>\
+\
+        <button onClick=\{signInWithGoogle\} className="w-full border rounded py-2">Continue with Google</button>\
+\
+        \{sent && <p className="text-sm text-green-600 mt-4">Check your email for the sign-in link.</p>\}\
+      </div>\
+    </div>\
+  );\
+\}\
+\
+# 6) PROFILE PAGE\
+- On load (server), read the Supabase auth session from cookies using the anon key (client SDK) or \'97 simpler \'97 call Supabase Admin (service role) to upsert a profile for the authenticated user when a token is present via client SDK.\
+- For brevity, we\'92ll manage profile via **API routes** that use the service role key.\
+\
+--- FILE: app/profile/page.tsx\
+"use client";\
+\
+import \{ useEffect, useState \} from "react";\
+\
+type Profile = \{\
+  user_id: string;\
+  email: string | null;\
+  display_name: string | null;\
+  avatar_url: string | null;\
+  bio: string | null;\
+\};\
+\
+export default function ProfilePage() \{\
+  const [profile, setProfile] = useState<Profile | null>(null);\
+  const [loading, setLoading] = useState(true);\
+\
+  async function load() \{\
+    setLoading(true);\
+    const res = await fetch("/api/profile");\
+    if (res.ok) setProfile(await res.json());\
+    setLoading(false);\
+  \}\
+\
+  async function save(updates: Partial<Profile>) \{\
+    const res = await fetch("/api/profile", \{\
+      method: "POST",\
+      headers: \{ "Content-Type":"application/json" \},\
+      body: JSON.stringify(updates)\
+    \});\
+    if (res.ok) await load();\
+    else alert("Save failed");\
+  \}\
+\
+  useEffect(() => \{ load(); \}, []);\
+\
+  if (loading) return <div className="min-h-screen flex items-center justify-center">Loading\'85</div>;\
+  if (!profile) return (\
+    <div className="min-h-screen flex items-center justify-center px-4">\
+      <div className="bg-white/90 p-6 rounded-2xl border shadow max-w-md text-center">\
+        <h1 className="text-xl font-semibold mb-2">Not signed in</h1>\
+        <p className="text-gray-600">Sign in to manage your profile.</p>\
+      </div>\
+    </div>\
+  );\
+\
+  return (\
+    <div className="min-h-screen flex items-center justify-center px-4">\
+      <div className="bg-white/90 p-6 rounded-2xl border shadow w-full max-w-xl">\
+        <h1 className="text-xl font-semibold mb-4">My Profile</h1>\
+        <div className="space-y-3">\
+          <div>Email: <span className="text-gray-700">\{profile.email\}</span></div>\
+          <label className="block">\
+            <span className="text-sm">Display name</span>\
+            <input\
+              className="w-full border rounded px-3 py-2"\
+              defaultValue=\{profile.display_name ?? ""\}\
+              onBlur=\{(e)=>save(\{ display_name: e.target.value \})\}\
+            />\
+          </label>\
+          <label className="block">\
+            <span className="text-sm">Avatar URL</span>\
+            <input\
+              className="w-full border rounded px-3 py-2"\
+              defaultValue=\{profile.avatar_url ?? ""\}\
+              onBlur=\{(e)=>save(\{ avatar_url: e.target.value \})\}\
+            />\
+          </label>\
+          <label className="block">\
+            <span className="text-sm">Bio</span>\
+            <textarea\
+              className="w-full border rounded px-3 py-2"\
+              rows=\{4\}\
+              defaultValue=\{profile.bio ?? ""\}\
+              onBlur=\{(e)=>save(\{ bio: e.target.value \})\}\
+            />\
+          </label>\
+        </div>\
+      </div>\
+    </div>\
+  );\
+\}\
+\
+# 7) PROFILE API\
+- Uses service role to read/write.\
+- Identifies the user via **Supabase client auth** token (sent by the browser SDK automatically).\
+- If authenticated user is missing in `profiles`, create row.\
+\
+--- FILE: app/api/profile/route.ts\
+import \{ NextRequest \} from "next/server";\
+import \{ getServiceSupabase \} from "@/lib/supabaseServer";\
+import \{ cookies, headers \} from "next/headers";\
+\
+export const runtime = "edge";\
+\
+function getBearer() \{\
+  const hdr = headers().get("Authorization") || "";\
+  if (hdr.startsWith("Bearer ")) return hdr.slice(7);\
+  return null;\
+\}\
+\
+// Helper: verify Supabase user by calling auth.getUser with the anon key via REST\
+async function getSupabaseUser() \{\
+  // In Edge, we cannot use admin auth.verify; simplest is to read the supabase-auth cookie from the browser SDK,\
+  // but on Edge this is non-trivial. For brevity, we accept a Bearer token if the client provides one.\
+  // Alternative: move this route to Node runtime and use @supabase/auth-helpers-nextjs.\
+  const token = getBearer();\
+  if (!token) return null;\
+  const resp = await fetch(`$\{process.env.SUPABASE_URL\}/auth/v1/user`, \{\
+    headers: \{\
+      "Authorization": `Bearer $\{token\}`,\
+      "apikey": process.env.SUPABASE_ANON_KEY!\
+    \}\
+  \});\
+  if (!resp.ok) return null;\
+  const data = await resp.json();\
+  return data; // \{ id, email, ... \}\
+\}\
+\
+export async function GET() \{\
+  const user = await getSupabaseUser();\
+  if (!user) return new Response(JSON.stringify(null), \{ status: 200 \});\
+\
+  const db = getServiceSupabase();\
+  const \{ data \} = await db\
+    .from("profiles")\
+    .select("*")\
+    .eq("user_id", user.id)\
+    .single();\
+\
+  if (data) return new Response(JSON.stringify(data), \{ status: 200 \});\
+\
+  // Upsert a fresh profile\
+  const \{ data: created \} = await db\
+    .from("profiles")\
+    .upsert(\{ user_id: user.id, email: user.email \})\
+    .select("*")\
+    .single();\
+\
+  return new Response(JSON.stringify(created), \{ status: 200 \});\
+\}\
+\
+export async function POST(req: NextRequest) \{\
+  const user = await getSupabaseUser();\
+  if (!user) return new Response("Unauthorized", \{ status: 401 \});\
+  const patch = await req.json();\
+\
+  const db = getServiceSupabase();\
+  const \{ data, error \} = await db\
+    .from("profiles")\
+    .update(\{\
+      display_name: patch.display_name ?? undefined,\
+      avatar_url: patch.avatar_url ?? undefined,\
+      bio: patch.bio ?? undefined,\
+      updated_at: new Date().toISOString()\
+    \})\
+    .eq("user_id", user.id)\
+    .select("*")\
+    .single();\
+\
+  if (error) return new Response(error.message, \{ status: 400 \});\
+  return new Response(JSON.stringify(data), \{ status: 200 \});\
+\}\
+\
+# 8) MODIFY /api/ask TO PERSIST CHATS\
+- Create or receive `session_id`.\
+- Resolve `user_id` (if logged in via bearer) or `guest_id` (from cookie).\
+- Save user question; stream model answer; when streaming completes, save the assistant message.\
+\
+--- FILE: app/api/ask/route.ts\
+import \{ NextRequest \} from "next/server";\
+import \{ getServiceSupabase \} from "@/lib/supabaseServer";\
+import \{ getOrCreateGuestId \} from "@/lib/guest";\
+\
+export const runtime = "edge";\
+\
+type Msg = \{ role: "user" | "assistant" | "system"; content: string \};\
+\
+async function getSupabaseUserId(req: NextRequest): Promise<string | null> \{\
+  const auth = req.headers.get("authorization");\
+  if (!auth?.startsWith("Bearer ")) return null;\
+  const token = auth.slice(7);\
+  const resp = await fetch(`$\{process.env.SUPABASE_URL\}/auth/v1/user`, \{\
+    headers: \{\
+      "Authorization": `Bearer $\{token\}`,\
+      "apikey": process.env.SUPABASE_ANON_KEY!\
+    \}\
+  \});\
+  if (!resp.ok) return null;\
+  const data = await resp.json();\
+  return data?.id ?? null;\
+\}\
+\
+export async function POST(req: NextRequest) \{\
+  const db = getServiceSupabase();\
+  const \{ question, history = [] as Msg[], session_id, title \} = await req.json();\
+\
+  const user_id = await getSupabaseUserId(req);\
+  const guest_id = user_id ? null : await getOrCreateGuestId();\
+\
+  // Ensure a chat session\
+  let sid = session_id as string | undefined;\
+  if (!sid) \{\
+    const \{ data \} = await db\
+      .from("chat_sessions")\
+      .insert(\{\
+        user_id: user_id || null,\
+        guest_id: guest_id || null,\
+        title: title || (question ? String(question).slice(0, 80) : null)\
+      \})\
+      .select("id")\
+      .single();\
+    sid = data?.id!;\
+  \}\
+\
+  // Save user message\
+  await db.from("chat_messages").insert(\{\
+    session_id: sid!,\
+    role: "user",\
+    content: String(question || "")\
+  \});\
+\
+  // Build OpenAI input\
+  const input: Msg[] = [\
+    \{ role: "system", content: process.env.SYSTEM_PROMPT || "You are a helpful assistant." \},\
+    ...history.filter(m => m.role !== "system"),\
+    \{ role: "user", content: String(question || "").trim() \}\
+  ];\
+\
+  const body = \{\
+    model: "gpt-4.1",\
+    input,\
+    tools: [\{ type: "file_search" \}],\
+    tool_resources: \{\
+      file_search: \{ vector_store_ids: [process.env.VECTOR_STORE_ID] \}\
+    \},\
+    stream: true\
+  \};\
+\
+  const upstream = await fetch("https://api.openai.com/v1/responses", \{\
+    method: "POST",\
+    headers: \{\
+      Authorization: `Bearer $\{process.env.OPENAI_API_KEY\}`,\
+      "Content-Type": "application/json"\
+    \},\
+    body: JSON.stringify(body)\
+  \});\
+\
+  // We need to capture the streamed content to save it at the end.\
+  const reader = upstream.body!.getReader();\
+  const encoder = new TextEncoder();\
+  let fullAnswer = "";\
+\
+  const stream = new ReadableStream(\{\
+    async start(controller) \{\
+      while (true) \{\
+        const \{ value, done \} = await reader.read();\
+        if (done) break;\
+        const chunk = new TextDecoder().decode(value);\
+        fullAnswer += chunk;\
+        controller.enqueue(encoder.encode(chunk));\
+      \}\
+      controller.close();\
+      // Save assistant message AFTER stream completes\
+      await db.from("chat_messages").insert(\{\
+        session_id: sid!,\
+        role: "assistant",\
+        content: fullAnswer\
+      \});\
+    \}\
+  \});\
+\
+  return new Response(stream, \{\
+    headers: \{\
+      "Content-Type": "text/event-stream",\
+      "Cache-Control": "no-cache, no-transform",\
+      "X-Session-Id": sid!\
+    \}\
+  \});\
+\}\
+\
+# 9) SMALL UI ADDITIONS\
+- Add \'93Login\'94 and \'93Profile\'94 links to the home page header (optional).\
+- Expose the `session_id` header to the client so the UI can keep the same session across turns.\
+\
+Edit `app/page.tsx` (top toolbar + keep session_id):\
+\
+--- PATCH: app/page.tsx (only the changed bits)\
+[... import/useState/useRef already present ...]\
+\
+export default function HomePage() \{\
+  const [chat, setChat] = useState<\{role:"user"|"assistant";content:string\}[]>([]);\
+  const [isThinking, setIsThinking] = useState(false);\
+  const [showChat, setShowChat] = useState(false);\
+  const [sessionId, setSessionId] = useState<string | null>(null);\
+\
+  async function handleAsk(q: string) \{\
+    setChat((c) => [...c, \{ role: "user", content: q \}]);\
+    setShowChat(true);\
+    setIsThinking(true);\
+\
+    const res = await fetch("/api/ask", \{\
+      method: "POST",\
+      headers: \{ "Content-Type":"application/json" \},\
+      body: JSON.stringify(\{ question: q, history: chat, session_id: sessionId \})\
+    \});\
+\
+    // Read session header (sticky session)\
+    const sid = res.headers.get("x-session-id");\
+    if (sid && sid !== sessionId) setSessionId(sid);\
+\
+    const reader = res.body!.getReader();\
+    const decoder = new TextDecoder();\
+\
+    let firstAssistantAdded = false;\
+\
+    while (true) \{\
+      const \{ value, done \} = await reader.read();\
+      if (done) break;\
+      const chunk = decoder.decode(value);\
+\
+      setChat((prev) => \{\
+        if (!firstAssistantAdded) \{\
+          firstAssistantAdded = true;\
+          return [...prev, \{ role: "assistant", content: chunk \}];\
+        \}\
+        const last = prev[prev.length - 1];\
+        if (last?.role === "assistant") \{\
+          const copy = prev.slice(0, -1);\
+          return [...copy, \{ role: "assistant", content: last.content + chunk \}];\
+        \}\
+        return [...prev, \{ role: "assistant", content: chunk \}];\
+      \});\
+    \}\
+\
+    setIsThinking(false);\
+  \}\
+\
+  return (\
+    <main className="relative min-h-screen w-full">\
+      <header className="absolute top-0 left-0 w-full p-4 flex justify-end gap-3 z-10">\
+        <a href="/login" className="text-white/95 underline">Login</a>\
+        <a href="/profile" className="text-white/95 underline">My Profile</a>\
+      </header>\
+      \{/* rest of original page content unchanged */\}\
+    </main>\
+  );\
+\}\
+\
+# 10) NOTES / OPERATIONS\
+- Run SQL: use Supabase SQL editor and paste `supabase/migrations/001_qmf.sql`.\
+- In Supabase Authentication settings, enable **Email OTP** and (optional) **Google** provider.\
+- For the client `login` page to pass the auth token as Bearer to `/api/profile`, add an interceptor or simply fetch with:\
+    fetch("/api/profile", \{ headers: \{ Authorization: `Bearer $\{supabase.auth.getSession()?.data.session?.access_token\}` \}\})\
+  (We used a simple approach in the page; feel free to refine with @supabase/auth-helpers-nextjs if you move `/api/profile` to Node runtime.)\
+- Security: keep `SUPABASE_SERVICE_ROLE_KEY` on the server only (Next.js Route Handlers). Never expose it to the client.\
+- Backups & exports: you can always export chats (sessions/messages) for analytics.\
+\
+# DONE\
+}
