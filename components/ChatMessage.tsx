@@ -15,3 +15,4 @@ export function ChatMessage({ role, content }: { role: "user" | "assistant"; con
     </div>
   );
 }
+
