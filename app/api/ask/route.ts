@@ -6,6 +6,14 @@ type Msg = { role: "user" | "assistant" | "system"; content: string };
 
 export async function POST(req: NextRequest) {
   const { question, history = [] as Msg[] } = await req.json();
+  
+  // Debug logging
+  console.log('API Request received:', { question, historyLength: history.length });
+  console.log('Environment check:', {
+    hasOpenAIKey: !!process.env.OPENAI_API_KEY,
+    hasVectorStore: !!process.env.VECTOR_STORE_ID,
+    hasSystemPrompt: !!process.env.SYSTEM_PROMPT
+  });
 
   // Create enhanced system prompt with document context
   const enhancedSystemPrompt = `${process.env.SYSTEM_PROMPT || "You are a helpful assistant."}
@@ -37,6 +45,8 @@ Use this knowledge to provide thoughtful, well-informed responses that reference
     stream: true
   };
 
+  console.log('Making OpenAI API request with body:', JSON.stringify(body, null, 2));
+  
   const resp = await fetch("https://api.openai.com/v1/chat/completions", {
     method: "POST",
     headers: {
@@ -46,9 +56,16 @@ Use this knowledge to provide thoughtful, well-informed responses that reference
     body: JSON.stringify(body)
   });
 
+  console.log('OpenAI API response status:', resp.status);
+
   if (!resp.ok) {
-    console.error('OpenAI API error:', resp.status, await resp.text());
-    return new Response(JSON.stringify({ error: 'Failed to get response from AI' }), {
+    const errorText = await resp.text();
+    console.error('OpenAI API error:', resp.status, errorText);
+    return new Response(JSON.stringify({ 
+      error: 'Failed to get response from AI',
+      details: errorText,
+      status: resp.status
+    }), {
       status: 500,
       headers: { "Content-Type": "application/json" }
     });

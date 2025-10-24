@@ -11,6 +11,11 @@ export async function ask(
     body: JSON.stringify({ question, history })
   });
 
+  if (!res.ok) {
+    const errorData = await res.json().catch(() => ({ error: 'Unknown error' }));
+    throw new Error(`API Error: ${res.status} - ${errorData.error || errorData.details || 'Unknown error'}`);
+  }
+
   if (!res.body) throw new Error("No response body");
   const reader = res.body.getReader();
   const decoder = new TextDecoder();
@@ -20,11 +25,13 @@ export async function ask(
     if (done) break;
     
     const chunk = decoder.decode(value);
+    console.log('Received chunk:', chunk);
     const lines = chunk.split('\n');
     
     for (const line of lines) {
       if (line.startsWith('data: ')) {
         const data = line.slice(6); // Remove 'data: ' prefix
+        console.log('Processing data:', data);
         
         if (data === '[DONE]') {
           return; // Stream is complete
@@ -32,12 +39,13 @@ export async function ask(
         
         try {
           const parsed = JSON.parse(data);
+          console.log('Parsed data:', parsed);
           if (parsed.choices && parsed.choices[0] && parsed.choices[0].delta && parsed.choices[0].delta.content) {
             onToken(parsed.choices[0].delta.content);
           }
         } catch (e) {
           // Skip invalid JSON lines
-          console.warn('Failed to parse SSE data:', data);
+          console.warn('Failed to parse SSE data:', data, e);
         }
       }
     }
