@@ -28,6 +28,12 @@ Use this knowledge to provide thoughtful, well-informed responses that reference
   const body = {
     model: "gpt-4o",
     messages: input,
+    tools: [{ type: "file_search" }],
+    tool_resources: {
+      file_search: {
+        vector_store_ids: [process.env.VECTOR_STORE_ID]
+      }
+    },
     stream: true
   };
 
@@ -39,6 +45,14 @@ Use this knowledge to provide thoughtful, well-informed responses that reference
     },
     body: JSON.stringify(body)
   });
+
+  if (!resp.ok) {
+    console.error('OpenAI API error:', resp.status, await resp.text());
+    return new Response(JSON.stringify({ error: 'Failed to get response from AI' }), {
+      status: 500,
+      headers: { "Content-Type": "application/json" }
+    });
+  }
 
   return new Response(resp.body, {
     headers: {
