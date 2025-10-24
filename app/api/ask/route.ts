@@ -15,6 +15,15 @@ export async function POST(req: NextRequest) {
     hasSystemPrompt: !!process.env.SYSTEM_PROMPT
   });
 
+  // Check if required environment variables are present
+  if (!process.env.OPENAI_API_KEY) {
+    console.error('OPENAI_API_KEY is missing');
+    return new Response(JSON.stringify({ error: 'OpenAI API key not configured' }), {
+      status: 500,
+      headers: { "Content-Type": "application/json" }
+    });
+  }
+
   // Create enhanced system prompt with document context
   const enhancedSystemPrompt = `${process.env.SYSTEM_PROMPT || "You are a helpful assistant."}
 
@@ -33,15 +42,10 @@ Use this knowledge to provide thoughtful, well-informed responses that reference
     { role: "user", content: String(question || "").trim() }
   ];
 
+  // First, let's try without the vector store to see if basic chat works
   const body = {
     model: "gpt-4o",
     messages: input,
-    tools: [{ type: "file_search" }],
-    tool_resources: {
-      file_search: {
-        vector_store_ids: [process.env.VECTOR_STORE_ID]
-      }
-    },
     stream: true
   };
 
