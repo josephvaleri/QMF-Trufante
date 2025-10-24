@@ -120,7 +120,8 @@ function ChatContent() {
                     style={{ fontWeight: message.role === "user" ? "bold" : "normal" }}
                     dangerouslySetInnerHTML={{
                       __html: message.content
-                        .replace(/\n/g, '<br>')
+                        .replace(/\n\n/g, '<br><br>')  // Double line breaks
+                        .replace(/\n/g, '<br>')        // Single line breaks
                         .replace(/\*\*(.*?)\*\*/g, '<strong>$1</strong>')
                         .replace(/\*(.*?)\*/g, '<em>$1</em>')
                         .replace(/\*/g, '')

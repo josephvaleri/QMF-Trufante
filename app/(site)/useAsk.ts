@@ -41,7 +41,9 @@ export async function ask(
           const parsed = JSON.parse(data);
           console.log('Parsed data:', parsed);
           if (parsed.choices && parsed.choices[0] && parsed.choices[0].delta && parsed.choices[0].delta.content) {
-            onToken(parsed.choices[0].delta.content);
+            const content = parsed.choices[0].delta.content;
+            // Preserve line breaks and formatting
+            onToken(content);
           }
         } catch (e) {
           // Skip invalid JSON lines
