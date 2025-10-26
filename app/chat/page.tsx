@@ -12,14 +12,13 @@ function ChatContent() {
   const router = useRouter();
   const messagesEndRef = useRef<HTMLDivElement>(null);
 
-  const initialQuestion = searchParams.get("q");
-
   useEffect(() => {
+    const initialQuestion = searchParams.get("q");
     if (initialQuestion) {
       setMessages([{ role: "user", content: initialQuestion }]);
       handleSendMessage(initialQuestion);
     }
-  }, [initialQuestion]);
+  }, [searchParams]);
 
   useEffect(() => {
     messagesEndRef.current?.scrollIntoView({ behavior: "smooth" });
