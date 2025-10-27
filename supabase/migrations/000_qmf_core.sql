@@ -94,22 +94,31 @@ alter table public.qna_embeddings enable row level security;
 alter table public.moderation_queue enable row level security;
 
 -- Profiles: owner read/write; mods/admins can read all
+drop policy if exists "profiles_select_own_or_admin" on public.profiles;
 create policy "profiles_select_own_or_admin" on public.profiles
 for select using (
   auth.uid() = user_id
   or exists (select 1 from public.profiles p where p.user_id = auth.uid() and p.role in ('admin','moderator'))
 );
+drop policy if exists "profiles_update_self" on public.profiles;
 create policy "profiles_update_self" on public.profiles for update using (auth.uid() = user_id);
+drop policy if exists "profiles_insert_self" on public.profiles;
 create policy "profiles_insert_self" on public.profiles for insert with check (auth.uid() = user_id);
 
 -- anon_sessions: open insert/select (cookie-based)
+drop policy if exists "anon_sessions_insert_any" on public.anon_sessions;
 create policy "anon_sessions_insert_any" on public.anon_sessions for insert to anon with check (true);
+drop policy if exists "anon_sessions_select_any" on public.anon_sessions;
 create policy "anon_sessions_select_any" on public.anon_sessions for select to anon using (true);
 
 -- qna: anyone can insert; only owner can read own
+drop policy if exists "qna_insert_any" on public.qna;
 create policy "qna_insert_any" on public.qna for insert to anon with check (true);
+drop policy if exists "qna_insert_auth" on public.qna;
 create policy "qna_insert_auth" on public.qna for insert to authenticated with check (true);
+drop policy if exists "qna_select_own_authed" on public.qna;
 create policy "qna_select_own_authed" on public.qna for select to authenticated using (user_id = auth.uid());
+drop policy if exists "qna_select_own_anon" on public.qna;
 create policy "qna_select_own_anon" on public.qna for select to anon using (anon_session_id is not null);
 
 -- qna_embeddings: server writes; optional read for authed
@@ -117,14 +126,17 @@ revoke all on public.qna_embeddings from anon, authenticated;
 grant select on public.qna_embeddings to authenticated;
 
 -- moderation_queue: mods/admins only
+drop policy if exists "mod_queue_mods_only_select" on public.moderation_queue;
 create policy "mod_queue_mods_only_select" on public.moderation_queue
 for select using (
   exists (select 1 from public.profiles p where p.user_id = auth.uid() and p.role in ('admin','moderator'))
 );
+drop policy if exists "mod_queue_mods_only_update" on public.moderation_queue;
 create policy "mod_queue_mods_only_update" on public.moderation_queue
 for update using (
   exists (select 1 from public.profiles p where p.user_id = auth.uid() and p.role in ('admin','moderator'))
 );
+drop policy if exists "mod_queue_any_insert" on public.moderation_queue;
 create policy "mod_queue_any_insert" on public.moderation_queue
 for insert to anon, authenticated with check (true);
 

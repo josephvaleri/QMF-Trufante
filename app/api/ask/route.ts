@@ -2,6 +2,8 @@ import { NextRequest } from "next/server";
 import OpenAI from "openai";
 import { cookies } from "next/headers";
 import { supaServer } from "@/lib/supabase/server";
+import { moderationService } from "@/lib/moderation";
+import { detectCrisis, crisisResources } from "@/lib/crisis";
 import { z } from "zod";
 
 export const runtime = "nodejs";
@@ -19,6 +21,22 @@ const schema = z.object({
 export async function POST(req: NextRequest) {
   try {
     const { question, history } = schema.parse(await req.json());
+
+    // Check for crisis situations FIRST (before moderation)
+    const crisis = detectCrisis(question);
+    
+    // Check user input for inappropriate content
+    const moderationResult = await moderationService.checkText(question);
+    if (moderationResult.flagged) {
+      console.log('Content flagged for moderation:', moderationResult);
+      return new Response(JSON.stringify({ 
+        error: 'Your message contains inappropriate content and cannot be processed.',
+        details: moderationResult.reason
+      }), {
+        status: 400,
+        headers: { "Content-Type": "application/json" }
+      });
+    }
 
     // Debug logging
     console.log('API Request received:', { question, historyLength: history.length });
@@ -227,16 +245,37 @@ Remember: Keep responses to 2-4 sentences maximum. Use calm, succinct, empatheti
     const readable = new ReadableStream({
       async start(controller) {
         try {
-          for await (const chunk of stream) {
-            if (chunk.choices[0]?.delta?.content) {
-              const content = chunk.choices[0].delta.content;
-              fullResponse += content; // Accumulate full response
+          // Handle crisis response
+          let crisisResponse = '';
+          if (crisis.isCrisis) {
+            const res = crisisResources("US");
+            crisisResponse = `${res.title}\n\n${res.lines.map((l) => `- ${l}`).join('\n')}\n\n${res.footer}\n\n_I'm not a substitute for professional help, but I care about your safety._`;
+            fullResponse = crisisResponse;
+            
+            // Stream the crisis response
+            const chunks = crisisResponse.split(' ');
+            for (const chunk of chunks) {
               const data = `data: ${JSON.stringify({
                 choices: [{
-                  delta: { content: content }
+                  delta: { content: chunk + ' ' }
                 }]
               })}\n\n`;
               controller.enqueue(encoder.encode(data));
+              await new Promise(resolve => setTimeout(resolve, 20));
+            }
+          } else {
+            // Normal streaming from OpenAI
+            for await (const chunk of stream) {
+              if (chunk.choices[0]?.delta?.content) {
+                const content = chunk.choices[0].delta.content;
+                fullResponse += content; // Accumulate full response
+                const data = `data: ${JSON.stringify({
+                  choices: [{
+                    delta: { content: content }
+                  }]
+                })}\n\n`;
+                controller.enqueue(encoder.encode(data));
+              }
             }
           }
           controller.enqueue(encoder.encode('data: [DONE]\n\n'));
@@ -272,7 +311,17 @@ Remember: Keep responses to 2-4 sentences maximum. Use calm, succinct, empatheti
             console.log('Successfully inserted Q&A with ID:', qnaRow.id);
             // Queue for moderation
             try {
-              await supa.from('moderation_queue').insert({ qna_id: qnaRow.id });
+              const autoFlags = crisis.isCrisis ? {
+                crisis_detected: true,
+                category: crisis.category,
+                matches: crisis.matches,
+              } : null;
+              
+              await supa.from('moderation_queue').insert({ 
+                qna_id: qnaRow.id,
+                auto_flags: autoFlags,
+                source: crisis.isCrisis ? 'detector:crisis' : 'assistants:file_search'
+              });
             } catch (err) {
               console.error('Failed to insert moderation queue:', err);
             }
