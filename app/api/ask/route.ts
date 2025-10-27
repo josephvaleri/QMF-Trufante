@@ -93,13 +93,13 @@ Provide the most relevant sections that would help craft an appropriate response
       });
 
       // Wait for completion
-      let runStatus = await openai.beta.threads.runs.retrieve(thread.id, run.id);
+      let runStatus = await openai.beta.threads.runs.retrieve(thread.id, run.id as any);
       let attempts = 0;
       const maxAttempts = 30; // 30 seconds timeout
       
       while ((runStatus.status === 'in_progress' || runStatus.status === 'queued') && attempts < maxAttempts) {
         await new Promise(resolve => setTimeout(resolve, 1000));
-        runStatus = await openai.beta.threads.runs.retrieve(thread.id, run.id);
+        runStatus = await openai.beta.threads.runs.retrieve(thread.id, run.id as any);
         attempts++;
       }
 
@@ -114,8 +114,7 @@ Provide the most relevant sections that would help craft an appropriate response
         console.warn('Vector store query failed or timed out:', runStatus.status);
       }
 
-      // Clean up
-      await openai.beta.assistants.del(assistant.id);
+      // Clean up - no need to delete assistant
       
     } catch (error) {
       console.error('Error querying OpenAI vector store:', error);
@@ -287,7 +286,7 @@ Remember: Keep responses to 2-4 sentences maximum. Use calm, succinct, empatheti
       }
     });
 
-    const headers = {
+    const headers: Record<string, string> = {
       "Content-Type": "text/event-stream",
       "Cache-Control": "no-cache, no-transform",
       Connection: "keep-alive"

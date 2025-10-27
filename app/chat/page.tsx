@@ -169,8 +169,8 @@ function ChatContent() {
                   cursor: 'pointer',
                   transition: 'background-color 0.2s'
                 }}
-                onMouseEnter={(e) => e.target.style.backgroundColor = 'rgb(17, 24, 39)'}
-                onMouseLeave={(e) => e.target.style.backgroundColor = 'rgb(31, 41, 55)'}
+                onMouseEnter={(e) => (e.target as HTMLButtonElement).style.backgroundColor = 'rgb(17, 24, 39)'}
+                onMouseLeave={(e) => (e.target as HTMLButtonElement).style.backgroundColor = 'rgb(31, 41, 55)'}
               >
                 Sign Up to Save Chat
               </button>
@@ -253,8 +253,8 @@ function ChatContent() {
                           marginLeft: '2px',
                           marginRight: '2px'
                         }}
-                        onMouseEnter={(e) => e.target.style.backgroundColor = 'rgb(17, 24, 39)'}
-                        onMouseLeave={(e) => e.target.style.backgroundColor = 'rgb(31, 41, 55)'}
+                        onMouseEnter={(e) => (e.target as HTMLButtonElement).style.backgroundColor = 'rgb(17, 24, 39)'}
+                        onMouseLeave={(e) => (e.target as HTMLButtonElement).style.backgroundColor = 'rgb(31, 41, 55)'}
                       >
                         Sign up
                       </button> to save.
