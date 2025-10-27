@@ -42,6 +42,7 @@ export async function ask(
           console.log('Parsed data:', parsed);
           if (parsed.choices && parsed.choices[0] && parsed.choices[0].delta && parsed.choices[0].delta.content) {
             const content = parsed.choices[0].delta.content;
+            console.log('Sending token to UI:', content);
             // Preserve line breaks and formatting
             onToken(content);
           }
