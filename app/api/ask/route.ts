@@ -71,80 +71,10 @@ export async function POST(req: NextRequest) {
 
     const supa = supaServer();
 
-    // Query OpenAI Vector Store for relevant context
-    let relevantContext = '';
-    try {
-      console.log('Querying OpenAI vector store for relevant context...');
-
-      // Create an assistant with the vector store for file search
-      const assistant = await openai.beta.assistants.create({
-        name: "Question My Faith Assistant",
-        instructions: "You are a helpful assistant for Question My Faith. Use the provided knowledge base to answer questions about faith, spirituality, and related topics.",
-        model: "gpt-4o",
-        tools: [{ type: "file_search" }],
-        tool_resources: {
-          file_search: {
-            vector_store_ids: [process.env.VECTOR_STORE_ID]
-          }
-        }
-      });
-
-      // Create a thread and run
-      const thread = await openai.beta.threads.create({
-        messages: [{
-          role: "user",
-          content: `Based on the QMF knowledge base, provide relevant context for this question: "${question}". 
-
-Focus on:
-- Conversational personality guidelines
-- Interaction principles and empathy techniques
-- Theological alignment and response patterns
-- Guardrails and boundaries
-- Specific guidance for the user's situation
-
-Provide the most relevant sections that would help craft an appropriate response.`
-        }]
-      });
-
-      const run = await openai.beta.threads.runs.create(thread.id, {
-        assistant_id: assistant.id
-      });
-
-      // Wait for completion
-      let runStatus = await openai.beta.threads.runs.retrieve(thread.id, run.id as any);
-      let attempts = 0;
-      const maxAttempts = 30; // 30 seconds timeout
-      
-      while ((runStatus.status === 'in_progress' || runStatus.status === 'queued') && attempts < maxAttempts) {
-        await new Promise(resolve => setTimeout(resolve, 1000));
-        runStatus = await openai.beta.threads.runs.retrieve(thread.id, run.id as any);
-        attempts++;
-      }
-
-      if (runStatus.status === 'completed') {
-        const messages = await openai.beta.threads.messages.list(thread.id);
-        const lastMessage = messages.data[0];
-        if (lastMessage.content[0].type === 'text') {
-          relevantContext = lastMessage.content[0].text.value;
-          console.log('Retrieved context from vector store:', relevantContext.substring(0, 100) + '...');
-        }
-      } else {
-        console.warn('Vector store query failed or timed out:', runStatus.status);
-      }
-
-      // Clean up - no need to delete assistant
-      
-    } catch (error) {
-      console.error('Error querying OpenAI vector store:', error);
-      // Continue without context if vector store query fails
-    }
-
-    // Create enhanced system prompt with document context
-    const basePrompt = process.env.SYSTEM_PROMPT || "You are a helpful assistant.";
+    // Create enhanced system prompt (without vector store for now - was too slow)
+    const basePrompt = process.env.SYSTEM_PROMPT || "You are a helpful assistant for Question My Faith.";
     
     const enhancedSystemPrompt = `${basePrompt}
-
-${relevantContext ? `\nRelevant context from the QMF knowledge base:\n${relevantContext}\n` : ''}
 
 Remember: Keep responses to 2-4 sentences maximum. Use calm, succinct, empathetic voice. Listen first, ask permission before offering spiritual insight.`;
 
@@ -167,77 +97,10 @@ Remember: Keep responses to 2-4 sentences maximum. Use calm, succinct, empatheti
       frequency_penalty: 0.1
     });
 
-    // Identify caller (authed or anon) BEFORE streaming
+    // Get basic auth info quickly (don't block on DB queries)
     const { data: auth } = await supa.auth.getUser();
     const cookieStore = await cookies();
     let anon = cookieStore.get('qmf_anon_session')?.value ?? null;
-
-    console.log('Auth check:', {
-      hasUser: !!auth.user,
-      userId: auth.user?.id,
-      hasAnonCookie: !!anon,
-      anonCookieValue: anon
-    });
-
-    // Create or verify anonymous session if user is not authenticated
-    if (!auth.user) {
-      if (!anon) {
-        // No cookie - create new session
-        const { data: anonSession, error: anonErr } = await supa
-          .from('anon_sessions')
-          .insert({})
-          .select('session_id')
-          .single();
-
-        if (anonSession && !anonErr) {
-          anon = anonSession.session_id;
-          console.log('Created new anonymous session:', anon);
-        } else {
-          console.error('Failed to create anonymous session:', anonErr);
-          anon = null;
-        }
-      } else {
-        // Cookie exists - verify session exists in DB, create if not
-        console.log('Verifying existing anonymous session:', anon);
-        
-        const { data: existingSession, error: checkErr } = await supa
-          .from('anon_sessions')
-          .select('session_id')
-          .eq('session_id', anon)
-          .single();
-
-        if (!existingSession || checkErr) {
-          console.log('Session not found in DB, creating new session...');
-          // Create new session with the UUID from cookie
-          const { data: anonSession, error: anonErr } = await supa
-            .from('anon_sessions')
-            .insert({ session_id: anon })
-            .select('session_id')
-            .single();
-
-          if (anonSession && !anonErr) {
-            console.log('Recreated session in database:', anon);
-          } else {
-            console.error('Failed to recreate session:', anonErr);
-            // Fallback: create new session
-            const { data: newSession, error: newErr } = await supa
-              .from('anon_sessions')
-              .insert({})
-              .select('session_id')
-              .single();
-            
-            if (newSession && !newErr) {
-              anon = newSession.session_id;
-              console.log('Created fallback session:', anon);
-            } else {
-              anon = null;
-            }
-          }
-        } else {
-          console.log('Session verified in database');
-        }
-      }
-    }
 
     // Collect full response for DB storage
     let fullResponse = '';
@@ -282,6 +145,24 @@ Remember: Keep responses to 2-4 sentences maximum. Use calm, succinct, empatheti
           
           // NOW save to database AFTER stream completes
           console.log('Stream complete, saving to database...');
+          
+          // Create or verify anonymous session if user is not authenticated
+          if (!auth.user && !anon) {
+            // No cookie - create new session
+            const { data: anonSession, error: anonErr } = await supa
+              .from('anon_sessions')
+              .insert({})
+              .select('session_id')
+              .single();
+
+            if (anonSession && !anonErr) {
+              anon = anonSession.session_id;
+              console.log('Created new anonymous session:', anon);
+            } else {
+              console.error('Failed to create anonymous session:', anonErr);
+              anon = null;
+            }
+          }
           
           // Persist Q&A row
           console.log('Attempting to insert Q&A:', {
