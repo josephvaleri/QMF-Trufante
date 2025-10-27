@@ -67,9 +67,12 @@ export function crisisResources(region: RegionCode) {
       lines: [
         "If you're in immediate danger, call **911**.",
         "In the U.S. & territories: Call or text **988** (Suicide & Crisis Lifeline), or chat at 988lifeline.org.",
+        "In Canada: Call **988** (Crisis Hotline).",
+        "Canadian Trans Lifeline: **877-330-6366**.",
+        "US LGBTQ Youth Support: **1-866-488-7386** or text **START** to 678-678.",
       ],
       footer:
-        "If you're outside the U.S., contact your local emergency number or search for a crisis hotline in your country.",
+        "If you're outside the U.S. or Canada, contact your local emergency number or search for a crisis hotline in your country.",
     };
   }
   // Fallback (non-US)

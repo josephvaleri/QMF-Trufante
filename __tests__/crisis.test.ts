@@ -66,14 +66,16 @@ describe("detectCrisis()", () => {
 });
 
 describe("crisisResources()", () => {
-  test("US resources include 988", () => {
+  test("US resources include 988 and additional support lines", () => {
     const r = crisisResources("US");
     const all = [r.title, ...r.lines, r.footer].join(" ");
     expect(all).toMatch(/988/);
     expect(all).toMatch(/911/);
+    expect(all).toMatch(/877-330-6366/); // Canadian Trans Lifeline
+    expect(all).toMatch(/1-866-488-7386/); // US LGBTQ Youth Support
   });
 
-  test("default resources do not hardcode US numbers", () => {
+  test("default resources do not hardcode US/Canada numbers", () => {
     const r = crisisResources("default");
     const all = [r.title, ...r.lines, r.footer].join(" ");
     expect(all).not.toMatch(/988/);
