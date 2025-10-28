@@ -24,8 +24,8 @@ export interface AuthUser {
 /**
  * Create Supabase client for server-side operations
  */
-export function createSupabaseServerClient() {
-  const cookieStore = cookies()
+export async function createSupabaseServerClient() {
+  const cookieStore = await cookies()
   
   return createServerClient(
     process.env.NEXT_PUBLIC_SUPABASE_URL!,
@@ -83,7 +83,7 @@ export function createSupabaseClient() {
  */
 export async function getCurrentUser(): Promise<AuthUser | null> {
   try {
-    const supabase = createSupabaseServerClient()
+    const supabase = await createSupabaseServerClient()
     
     // Get the current user
     const { data: { user }, error: userError } = await supabase.auth.getUser()
@@ -139,7 +139,7 @@ export function hasRole(user: AuthUser | null, requiredRole: UserRole): boolean 
  */
 export async function createUserProfile(userId: string, email: string, preferredName: string): Promise<UserProfile | null> {
   try {
-    const supabase = createSupabaseServerClient()
+    const supabase = await createSupabaseServerClient()
     
     const { data, error } = await supabase
       .from('profiles')
@@ -169,7 +169,7 @@ export async function createUserProfile(userId: string, email: string, preferred
  */
 export async function createAnonymousSession(): Promise<string | null> {
   try {
-    const supabase = createSupabaseServerClient()
+    const supabase = await createSupabaseServerClient()
     
     const { data, error } = await supabase
       .from('anon_sessions')
@@ -206,7 +206,7 @@ export async function isAuthenticated(): Promise<boolean> {
  */
 export async function signOut() {
   try {
-    const supabase = createSupabaseServerClient()
+    const supabase = await createSupabaseServerClient()
     await supabase.auth.signOut()
   } catch (error) {
     console.error('Error signing out:', error)
