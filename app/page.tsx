@@ -156,12 +156,22 @@ export default function HomePage() {
                   </Button>
                 </div>
               ) : (
-                <Button
-                  onClick={() => router.push('/auth')}
-                  className="bg-orange-600/90 hover:bg-orange-700/90 text-white border-0"
-                >
-                  Login
-                </Button>
+                <div className="flex items-center space-x-3">
+                  <Button
+                    onClick={() => router.push('/auth')}
+                    variant="outline"
+                    className="border-orange-300 text-orange-700 hover:bg-orange-50"
+                  >
+                    Login
+                  </Button>
+                  <Button
+                    onClick={() => router.push('/auth')}
+                    className="bg-orange-600/90 hover:bg-orange-700/90 text-white border-0"
+                  >
+                    <Heart className="w-4 h-4 mr-2" />
+                    Sign Up
+                  </Button>
+                </div>
               )}
             </div>
           </div>
