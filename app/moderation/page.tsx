@@ -80,14 +80,11 @@ export default function ModerationPage() {
             user_question,
             assistant_answer,
             created_at,
-            profiles:user_id (
-              preferred_name,
-              email
-            )
+            user_id
           )
         `)
         .eq('status', 'pending')
-        .order('created_at', { ascending: false });
+        .order('id', { ascending: false });
 
       if (error) throw error;
       setModerationItems(data || []);
@@ -108,6 +105,7 @@ export default function ModerationPage() {
         headers: {
           'Content-Type': 'application/json',
         },
+        credentials: 'include',
         body: JSON.stringify({
           qnaId: itemId,
           editedAnswer: editedAnswer
@@ -292,7 +290,7 @@ export default function ModerationPage() {
                   <p className="text-gray-600">No items pending moderation review.</p>
                 </CardContent>
               </Card>
-            ) : (
+            ) : viewMode === 'card' ? (
               <div className="space-y-4">
                 {moderationItems.map((item) => (
                   <motion.div
@@ -310,7 +308,7 @@ export default function ModerationPage() {
                             </div>
                             <div>
                               <CardTitle className="text-orange-900 text-lg">
-                                {item.qna.profiles?.preferred_name || 'Anonymous User'}
+                                Moderation Item #{item.id}
                               </CardTitle>
                               <CardDescription className="flex items-center space-x-2">
                                 <Clock className="w-4 h-4" />
@@ -403,6 +401,130 @@ export default function ModerationPage() {
                   </motion.div>
                 ))}
               </div>
+            ) : (
+              <Card className="bg-white/80 backdrop-blur-sm border-orange-200">
+                <CardContent className="p-0">
+                  <div className="overflow-x-auto">
+                    <table className="w-full">
+                      <thead className="bg-gray-50 border-b border-gray-200">
+                        <tr>
+                          <th className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">
+                            ID
+                          </th>
+                          <th className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">
+                            Question
+                          </th>
+                          <th className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">
+                            Answer
+                          </th>
+                          <th className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">
+                            Date
+                          </th>
+                          <th className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">
+                            Actions
+                          </th>
+                        </tr>
+                      </thead>
+                      <tbody className="bg-white divide-y divide-gray-200">
+                        {moderationItems.map((item) => (
+                          <tr key={item.id} className="hover:bg-gray-50">
+                            <td className="px-6 py-4 whitespace-nowrap">
+                              <div className="flex items-center">
+                                <div className="w-8 h-8 bg-blue-100 rounded-full flex items-center justify-center mr-3">
+                                  <User className="w-4 h-4 text-blue-600" />
+                                </div>
+                                <div>
+                                  <div className="text-sm font-medium text-gray-900">
+                                    #{item.id}
+                                  </div>
+                                </div>
+                              </div>
+                            </td>
+                            <td className="px-6 py-4">
+                              <div className="text-sm text-gray-900 max-w-xs truncate">
+                                {item.qna.user_question}
+                              </div>
+                            </td>
+                            <td className="px-6 py-4">
+                              <div className="text-sm text-gray-900 max-w-xs truncate">
+                                {editingItem?.id === item.id ? (
+                                  <div className="space-y-2">
+                                    <Textarea
+                                      value={editedAnswer}
+                                      onChange={(e) => setEditedAnswer(e.target.value)}
+                                      rows={3}
+                                      className="text-xs border-orange-300 focus:border-orange-500"
+                                    />
+                                    <div className="flex space-x-1">
+                                      <Button
+                                        onClick={() => handleModerationAction(item.id, 'edit', editedAnswer)}
+                                        disabled={isProcessing}
+                                        size="sm"
+                                        className="bg-orange-600 hover:bg-orange-700 text-xs px-2 py-1"
+                                      >
+                                        Save
+                                      </Button>
+                                      <Button
+                                        onClick={cancelEdit}
+                                        disabled={isProcessing}
+                                        size="sm"
+                                        variant="outline"
+                                        className="text-xs px-2 py-1"
+                                      >
+                                        Cancel
+                                      </Button>
+                                    </div>
+                                  </div>
+                                ) : (
+                                  <div className="text-sm text-gray-900 max-w-xs truncate">
+                                    {item.qna.assistant_answer}
+                                  </div>
+                                )}
+                              </div>
+                            </td>
+                            <td className="px-6 py-4 whitespace-nowrap text-sm text-gray-500">
+                              {new Date(item.qna.created_at).toLocaleDateString()}
+                            </td>
+                            <td className="px-6 py-4 whitespace-nowrap text-sm font-medium">
+                              <div className="flex space-x-1">
+                                <Button
+                                  onClick={() => handleModerationAction(item.id, 'accept')}
+                                  disabled={isProcessing}
+                                  size="sm"
+                                  className="bg-green-600 hover:bg-green-700 text-xs px-2 py-1"
+                                >
+                                  <Check className="w-3 h-3 mr-1" />
+                                  Accept
+                                </Button>
+                                <Button
+                                  onClick={() => startEdit(item)}
+                                  disabled={isProcessing}
+                                  size="sm"
+                                  variant="outline"
+                                  className="border-blue-300 text-blue-700 hover:bg-blue-50 text-xs px-2 py-1"
+                                >
+                                  <Edit className="w-3 h-3 mr-1" />
+                                  Edit
+                                </Button>
+                                <Button
+                                  onClick={() => handleModerationAction(item.id, 'deny')}
+                                  disabled={isProcessing}
+                                  size="sm"
+                                  variant="outline"
+                                  className="border-red-300 text-red-700 hover:bg-red-50 text-xs px-2 py-1"
+                                >
+                                  <X className="w-3 h-3 mr-1" />
+                                  Deny
+                                </Button>
+                              </div>
+                            </td>
+                          </tr>
+                        ))}
+                      </tbody>
+                    </table>
+                  </div>
+                </CardContent>
+              </Card>
             )}
           </motion.div>
         </div>

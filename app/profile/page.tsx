@@ -8,8 +8,39 @@ import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/com
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { Separator } from "@/components/ui/separator";
+import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
 import { motion } from "framer-motion";
 import { User, Mail, Heart, Shield, LogOut, Save, ArrowLeft } from "lucide-react";
+
+// Religion options from the database constraint
+const RELIGION_OPTIONS = [
+  'Agnostic',
+  'Atheist',
+  'Baha\'i',
+  'Buddhist',
+  'Christian - Anglican',
+  'Christian - Baptist',
+  'Christian - Eastern Orthodox',
+  'Christian - Evangelical',
+  'Christian - Lutheran',
+  'Christian - Methodist',
+  'Christian - Non-denominational',
+  'Christian - Other',
+  'Christian - Pentecostal',
+  'Christian - Presbyterian',
+  'Christian - Protestant',
+  'Christian - Roman Catholic',
+  'Hindu',
+  'Jain',
+  'Jewish',
+  'Muslim',
+  'Other',
+  'Prefer not to say',
+  'Shinto',
+  'Sikh',
+  'Taoist',
+  'Zoroastrian'
+];
 
 export default function ProfilePage() {
   const [user, setUser] = useState<any>(null);
@@ -252,13 +283,21 @@ export default function ProfilePage() {
 
                 <div className="space-y-2">
                   <Label htmlFor="religion" className="text-orange-900">Religion/Faith Tradition</Label>
-                  <Input
-                    id="religion"
+                  <Select
                     value={formData.religion}
-                    onChange={(e) => setFormData(prev => ({ ...prev, religion: e.target.value }))}
-                    placeholder="Your faith tradition (optional)"
-                    className="border-orange-300 focus:border-orange-500"
-                  />
+                    onValueChange={(value) => setFormData(prev => ({ ...prev, religion: value }))}
+                  >
+                    <SelectTrigger className="border-orange-300 focus:border-orange-500 bg-white">
+                      <SelectValue placeholder="Select your faith tradition (optional)" />
+                    </SelectTrigger>
+                    <SelectContent className="bg-white border border-gray-200 shadow-lg">
+                      {RELIGION_OPTIONS.map((religion) => (
+                        <SelectItem key={religion} value={religion} className="bg-white hover:bg-gray-100">
+                          {religion}
+                        </SelectItem>
+                      ))}
+                    </SelectContent>
+                  </Select>
                 </div>
 
                 <Button

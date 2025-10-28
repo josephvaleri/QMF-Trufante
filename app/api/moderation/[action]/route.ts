@@ -1,5 +1,6 @@
 import { NextRequest, NextResponse } from 'next/server';
-import { createClient } from '@/lib/supabase/server';
+import { createServerClient } from '@supabase/ssr';
+import { cookies } from 'next/headers';
 
 export async function POST(
   request: NextRequest,
@@ -7,7 +8,21 @@ export async function POST(
 ) {
   try {
     const { action } = await params;
-    const supabase = createClient();
+    
+    // Create Supabase client with cookies for API routes
+    const cookieStore = await cookies();
+    const supabase = createServerClient(
+      process.env.NEXT_PUBLIC_SUPABASE_URL!,
+      process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY!,
+      {
+        cookies: {
+          get(name: string) {
+            return cookieStore.get(name)?.value;
+          },
+        },
+      }
+    );
+    
     const { data: { user }, error: authError } = await supabase.auth.getUser();
 
     if (authError || !user) {
@@ -27,6 +42,8 @@ export async function POST(
 
     const { qnaId, editedAnswer, moderatorNotes } = await request.json();
 
+    console.log('Moderation action request:', { action, qnaId, editedAnswer: !!editedAnswer, moderatorNotes: !!moderatorNotes });
+
     if (!qnaId) {
       return NextResponse.json({ error: 'QnA ID is required' }, { status: 400 });
     }
@@ -45,6 +62,8 @@ export async function POST(
       updateData.moderator_notes = moderatorNotes;
     }
 
+    // Update the moderation queue item
+    console.log('Updating moderation queue with:', { id: qnaId, updateData });
     const { error: updateError } = await supabase
       .from('moderation_queue')
       .update(updateData)
@@ -57,16 +76,57 @@ export async function POST(
 
     // Check if we've reached 20 accepted items for retraining
     if (action === 'accept' || action === 'edit') {
-      const { data: acceptedCount, error: countError } = await supabase
+      const { count: acceptedCount, error: countError } = await supabase
         .from('moderation_queue')
-        .select('id', { count: 'exact' })
+        .select('*', { count: 'exact', head: true })
         .in('status', ['accepted', 'edited']);
 
-      if (!countError && acceptedCount && acceptedCount.length >= 20) {
-        // Trigger retraining process
-        console.log('Reached 20 accepted items - triggering model retraining');
-        // TODO: Implement actual retraining logic here
-        // This could involve calling an external API or triggering a background job
+      if (!countError && acceptedCount && acceptedCount >= 20) {
+        // Check if we've already triggered retraining for this batch
+        const { data: lastRetraining } = await supabase
+          .from('system_config')
+          .select('value')
+          .eq('key', 'last_retraining_count')
+          .single();
+
+        const lastCount = lastRetraining ? parseInt(lastRetraining.value) : 0;
+        
+        if (acceptedCount > lastCount) {
+          // Trigger retraining process with moderated content
+          console.log(`Reached ${acceptedCount} moderated items - triggering model retraining with moderated Q&A pairs`);
+          
+          try {
+            // Update the last retraining count
+            await supabase
+              .from('system_config')
+              .upsert({
+                key: 'last_retraining_count',
+                value: acceptedCount.toString(),
+                updated_at: new Date().toISOString()
+              }, {
+                onConflict: 'key'
+              });
+
+            // Call the retraining script
+            const retrainingResponse = await fetch(`${process.env.NEXT_PUBLIC_SITE_URL || 'http://localhost:3000'}/api/retrain-model`, {
+              method: 'POST',
+              headers: {
+                'Content-Type': 'application/json',
+              },
+            });
+            
+            if (retrainingResponse.ok) {
+              const result = await retrainingResponse.json();
+              console.log('Model retraining with moderated content completed:', result);
+            } else {
+              console.error('Failed to trigger model retraining');
+            }
+          } catch (retrainingError) {
+            console.error('Error triggering model retraining:', retrainingError);
+          }
+        } else {
+          console.log(`Retraining already triggered for ${acceptedCount} items (last: ${lastCount})`);
+        }
       }
     }
 

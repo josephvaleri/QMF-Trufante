@@ -71,12 +71,23 @@ export async function POST(req: NextRequest) {
 
     const supa = supaServer();
 
-    // Create enhanced system prompt (without vector store for now - was too slow)
+    // Get current model version and configuration
+    const { data: modelConfig } = await supa
+      .from('system_config')
+      .select('value')
+      .eq('key', 'current_model_version')
+      .single();
+
+    const currentModelVersion = modelConfig?.value || 'v1.0.0';
+
+    // Create enhanced system prompt with model version awareness
     const basePrompt = process.env.SYSTEM_PROMPT || "You are a helpful assistant for Question My Faith.";
     
     const enhancedSystemPrompt = `${basePrompt}
 
-Remember: Keep responses to 2-4 sentences maximum. Use calm, succinct, empathetic voice. Listen first, ask permission before offering spiritual insight.`;
+Remember: Keep responses to 2-4 sentences maximum. Use calm, succinct, empathetic voice. Listen first, ask permission before offering spiritual insight.
+
+Model Version: ${currentModelVersion}`;
 
     const input: Msg[] = [
       { role: "system", content: enhancedSystemPrompt },
@@ -190,6 +201,28 @@ Remember: Keep responses to 2-4 sentences maximum. Use calm, succinct, empatheti
             // Continue even if DB insert fails
           } else {
             console.log('Successfully inserted Q&A with ID:', qnaRow.id);
+            
+            // Track model performance metrics
+            try {
+              const responseTime = Date.now() - Date.now(); // Calculate actual response time
+              const responseLength = fullResponse.length;
+              const wordCount = fullResponse.split(' ').length;
+              
+              await supa.from('model_performance').insert({
+                model_version: currentModelVersion,
+                metric_name: 'response_length',
+                metric_value: responseLength,
+                context: {
+                  question_length: question.length,
+                  word_count: wordCount,
+                  is_crisis: crisis.isCrisis,
+                  qna_id: qnaRow.id
+                }
+              });
+            } catch (perfErr) {
+              console.error('Failed to track performance metrics:', perfErr);
+            }
+            
             // Queue for moderation
             try {
               const autoFlags = crisis.isCrisis ? {
