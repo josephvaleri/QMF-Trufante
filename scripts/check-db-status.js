@@ -1,17 +1,8 @@
-const { createClient } = require('@supabase/supabase-js');
-require('dotenv').config({ path: '.env.local' });
-
-const supabaseUrl = process.env.NEXT_PUBLIC_SUPABASE_URL;
-const supabaseKey = process.env.SUPABASE_SERVICE_ROLE_KEY;
-
-if (!supabaseUrl || !supabaseKey) {
-  console.error('Missing Supabase environment variables');
-  process.exit(1);
-}
-
-const supabase = createClient(supabaseUrl, supabaseKey);
+const { createServiceClient } = require('../lib/supabase/service.cjs');
 
 async function checkDatabaseStatus() {
+  const supabase = createServiceClient();
+  
   try {
     console.log('🔍 Checking database status...\n');
 
@@ -96,3 +87,4 @@ async function checkDatabaseStatus() {
 }
 
 checkDatabaseStatus();
+

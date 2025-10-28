@@ -181,3 +181,4 @@ if __name__ == "__main__":
     build_derogatory()
 
     print(f"\nOutput directory: {OUT.resolve()}")
+

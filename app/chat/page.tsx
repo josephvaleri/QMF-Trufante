@@ -4,6 +4,11 @@ import { useState, useEffect, useRef, Suspense } from "react";
 import { useSearchParams, useRouter } from "next/navigation";
 import { ask, type ChatTurn } from "../(site)/useAsk";
 import { supaBrowser } from "@/lib/supabase/client";
+import { Button } from "@/components/ui/button";
+import { Card, CardContent } from "@/components/ui/card";
+import { Textarea } from "@/components/ui/textarea";
+import { motion, AnimatePresence } from "framer-motion";
+import { ArrowLeft, Send, User, MessageCircle, Heart, LogOut } from "lucide-react";
 
 function ChatContent() {
   const [messages, setMessages] = useState<ChatTurn[]>([]);
@@ -119,171 +124,197 @@ function ChatContent() {
   }
 
   return (
-    <div className="h-screen w-full relative" style={{ fontFamily: 'Garamond, serif' }}>
-      {/* Background image */}
-      <div className="absolute inset-0 -z-10">
-        <img
-          src="/bg.jpg"
-          alt="Background"
-          className="w-full h-full object-cover"
-        />
-        <div className="absolute inset-0" style={{ background: "var(--bg-overlay)" }} />
-      </div>
-
-      {/* Chat Container - 70% width, centered */}
-      <div className="h-full flex items-center justify-center p-4">
-        <div className="w-[70%] h-[85vh] flex flex-col rounded-3xl shadow-2xl border border-white/50 overflow-hidden" style={{ backgroundColor: '#feecdb' }}>
-          {/* Header */}
-          <div className="bg-blue-600 text-white px-4 py-3 flex items-center justify-between">
-            <div className="flex items-center">
-              <button 
+    <div className="h-screen w-full bg-gradient-to-br from-blue-50 via-white to-orange-50 flex flex-col">
+      {/* Header */}
+      <header className="bg-white/90 backdrop-blur-sm border-b border-orange-200 sticky top-0 z-50">
+        <div className="container mx-auto px-4 py-3">
+          <div className="flex justify-between items-center">
+            <div className="flex items-center space-x-4">
+              <Button
                 onClick={() => router.back()}
-                className="mr-3 p-1 hover:bg-blue-700 rounded"
+                variant="ghost"
+                size="sm"
+                className="text-orange-700 hover:bg-orange-50"
               >
-                <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
-                  <path d="m15 18-6-6 6-6"/>
-                </svg>
-              </button>
-              <div className="flex items-center">
-                <img
-                  src="/qmf-logo.png"
-                  alt="Question My Faith"
-                  style={{ width: '96px', height: '96px', objectFit: 'contain' }}
-                />
-                <p className="text-sm text-blue-100 ml-3">AI Assistant</p>
+                <ArrowLeft className="w-4 h-4 mr-2" />
+                Back
+              </Button>
+              <div className="flex items-center space-x-2">
+                <div className="w-8 h-8 bg-gradient-to-br from-orange-400 to-orange-600 rounded-full flex items-center justify-center">
+                  <MessageCircle className="w-4 h-4 text-white" />
+                </div>
+                <h1 className="text-orange-900 font-semibold text-lg">Spiritual Conversation</h1>
               </div>
             </div>
             
             {/* Sign Up Button for unauthenticated users */}
             {!isLoggedIn && (
-              <button
+              <Button
                 onClick={() => router.push('/auth')}
-                style={{
-                  backgroundColor: 'rgb(31, 41, 55)',
-                  color: 'white',
-                  padding: '6px 12px',
-                  borderRadius: '8px',
-                  fontSize: '14px',
-                  fontWeight: '500',
-                  border: 'none',
-                  cursor: 'pointer',
-                  transition: 'background-color 0.2s'
-                }}
-                onMouseEnter={(e) => (e.target as HTMLButtonElement).style.backgroundColor = 'rgb(17, 24, 39)'}
-                onMouseLeave={(e) => (e.target as HTMLButtonElement).style.backgroundColor = 'rgb(31, 41, 55)'}
+                className="bg-orange-600 hover:bg-orange-700"
               >
+                <Heart className="w-4 h-4 mr-2" />
                 Sign Up to Save Chat
-              </button>
+              </Button>
             )}
             
             {/* Welcome message for authenticated users */}
             {isLoggedIn && (
-              <div className="text-blue-100 text-sm">
-                Welcome back{user?.user_metadata?.preferred_name ? `, ${user.user_metadata.preferred_name}` : ''}!
+              <div className="flex items-center space-x-3">
+                <div className="text-orange-700 text-sm">
+                  Welcome back{user?.user_metadata?.preferred_name ? `, ${user.user_metadata.preferred_name}` : ''}!
+                </div>
+                <Button
+                  onClick={() => router.push('/profile')}
+                  variant="outline"
+                  size="sm"
+                  className="border-orange-300 text-orange-700 hover:bg-orange-50"
+                >
+                  <User className="w-4 h-4 mr-2" />
+                  Profile
+                </Button>
               </div>
             )}
           </div>
+        </div>
+      </header>
 
+      {/* Chat Container */}
+      <div className="flex-1 flex items-center justify-center p-4">
+        <div className="w-full max-w-4xl h-full flex flex-col">
           {/* Messages */}
-          <div className="flex-1 overflow-y-auto px-8 py-6 space-y-4">
-            {messages.map((message, index) => (
-              <div
-                key={index}
-                className={`flex ${message.role === "user" ? "justify-end" : "justify-start"}`}
-              >
-                <div
-                  className={`max-w-[80%] rounded-2xl ${
-                    message.role === "user"
-                      ? "bg-blue-600 text-white"
-                      : "bg-gray-100 text-gray-800 shadow-sm"
-                  }`}
-                  style={{ padding: '16px 24px' }}
+          <div className="flex-1 overflow-y-auto px-4 py-6 space-y-4">
+            <AnimatePresence>
+              {messages.map((message, index) => (
+                <motion.div
+                  key={index}
+                  initial={{ opacity: 0, y: 20 }}
+                  animate={{ opacity: 1, y: 0 }}
+                  exit={{ opacity: 0, y: -20 }}
+                  className={`flex ${message.role === "user" ? "justify-end" : "justify-start"}`}
                 >
-                  <div 
-                    className="whitespace-pre-wrap break-words"
-                    style={{ fontWeight: message.role === "user" ? "bold" : "normal" }}
-                    dangerouslySetInnerHTML={{
-                      __html: message.content
-                        .replace(/\n\n/g, '<br><br>')  // Double line breaks
-                        .replace(/\n/g, '<br>')        // Single line breaks
-                        .replace(/\*\*(.*?)\*\*/g, '<strong>$1</strong>')
-                        .replace(/\*(.*?)\*/g, '<em>$1</em>')
-                        .replace(/\*/g, '')
-                    }}
-                  />
-                </div>
-              </div>
-            ))}
+                  <Card className={`max-w-[80%] ${
+                    message.role === "user"
+                      ? "bg-orange-600 text-white border-orange-600"
+                      : "bg-white text-gray-800 border-orange-200"
+                  }`}>
+                    <CardContent className="p-4">
+                      <div className="flex items-start space-x-3">
+                        <div className={`w-8 h-8 rounded-full flex items-center justify-center ${
+                          message.role === "user" 
+                            ? "bg-orange-500" 
+                            : "bg-blue-100"
+                        }`}>
+                          {message.role === "user" ? (
+                            <User className="w-4 h-4 text-white" />
+                          ) : (
+                            <MessageCircle className="w-4 h-4 text-blue-600" />
+                          )}
+                        </div>
+                        <div className="flex-1">
+                          <div 
+                            className="whitespace-pre-wrap break-words"
+                            dangerouslySetInnerHTML={{
+                              __html: message.content
+                                .replace(/\n\n/g, '<br><br>')
+                                .replace(/\n/g, '<br>')
+                                .replace(/\*\*(.*?)\*\*/g, '<strong>$1</strong>')
+                                .replace(/\*(.*?)\*/g, '<em>$1</em>')
+                                .replace(/\*/g, '')
+                            }}
+                          />
+                        </div>
+                      </div>
+                    </CardContent>
+                  </Card>
+                </motion.div>
+              ))}
+            </AnimatePresence>
             
             {isLoading && (
-              <div className="flex justify-start">
-                <div className="bg-gray-100 text-gray-800 rounded-2xl px-4 py-3 shadow-sm">
-                  <div className="flex items-center space-x-2">
-                    <div className="flex space-x-1">
-                      <div className="w-2 h-2 bg-gray-400 rounded-full animate-bounce"></div>
-                      <div className="w-2 h-2 bg-gray-400 rounded-full animate-bounce" style={{ animationDelay: '0.1s' }}></div>
-                      <div className="w-2 h-2 bg-gray-400 rounded-full animate-bounce" style={{ animationDelay: '0.2s' }}></div>
+              <motion.div
+                initial={{ opacity: 0, y: 20 }}
+                animate={{ opacity: 1, y: 0 }}
+                className="flex justify-start"
+              >
+                <Card className="bg-white border-orange-200">
+                  <CardContent className="p-4">
+                    <div className="flex items-center space-x-3">
+                      <div className="w-8 h-8 bg-blue-100 rounded-full flex items-center justify-center">
+                        <MessageCircle className="w-4 h-4 text-blue-600" />
+                      </div>
+                      <div className="flex space-x-1">
+                        <div className="w-2 h-2 bg-orange-400 rounded-full animate-bounce"></div>
+                        <div className="w-2 h-2 bg-orange-400 rounded-full animate-bounce" style={{ animationDelay: '0.1s' }}></div>
+                        <div className="w-2 h-2 bg-orange-400 rounded-full animate-bounce" style={{ animationDelay: '0.2s' }}></div>
+                      </div>
                     </div>
-                  </div>
-                </div>
-              </div>
+                  </CardContent>
+                </Card>
+              </motion.div>
             )}
             
             {/* Notice for unauthenticated users */}
             {!isLoggedIn && messages.length > 0 && (
-              <div className="flex justify-center">
-                <div className="bg-yellow-50 border border-yellow-200 rounded p-1 max-w-xs">
-                  <div className="flex items-center">
-                    <svg className="w-3 h-3 text-yellow-600 mr-1" fill="currentColor" viewBox="0 0 20 20">
-                      <path fillRule="evenodd" d="M8.257 3.099c.765-1.36 2.722-1.36 3.486 0l5.58 9.92c.75 1.334-.213 2.98-1.742 2.98H4.42c-1.53 0-2.493-1.646-1.743-2.98l5.58-9.92zM11 13a1 1 0 11-2 0 1 1 0 012 0zm-1-8a1 1 0 00-1 1v3a1 1 0 002 0V6a1 1 0 00-1-1z" clipRule="evenodd" />
-                    </svg>
-                    <p className="text-yellow-800 text-xs">
-                      <strong>Chat not saved.</strong> <button 
-                        onClick={() => router.push('/auth')}
-                        style={{
-                          backgroundColor: 'rgb(31, 41, 55)',
-                          color: 'white',
-                          padding: '2px 6px',
-                          borderRadius: '4px',
-                          fontSize: '10px',
-                          fontWeight: '500',
-                          border: 'none',
-                          cursor: 'pointer',
-                          transition: 'background-color 0.2s',
-                          marginLeft: '2px',
-                          marginRight: '2px'
-                        }}
-                        onMouseEnter={(e) => (e.target as HTMLButtonElement).style.backgroundColor = 'rgb(17, 24, 39)'}
-                        onMouseLeave={(e) => (e.target as HTMLButtonElement).style.backgroundColor = 'rgb(31, 41, 55)'}
-                      >
-                        Sign up
-                      </button> to save.
-                    </p>
-                  </div>
-                </div>
-              </div>
+              <motion.div
+                initial={{ opacity: 0, y: 20 }}
+                animate={{ opacity: 1, y: 0 }}
+                className="flex justify-center"
+              >
+                <Card className="bg-yellow-50 border-yellow-200 max-w-md">
+                  <CardContent className="p-4">
+                    <div className="flex items-center space-x-3">
+                      <div className="w-8 h-8 bg-yellow-100 rounded-full flex items-center justify-center">
+                        <Heart className="w-4 h-4 text-yellow-600" />
+                      </div>
+                      <div>
+                        <p className="text-yellow-800 text-sm">
+                          <strong>Chat not saved.</strong> 
+                          <Button 
+                            onClick={() => router.push('/auth')}
+                            variant="link"
+                            className="p-0 h-auto text-yellow-800 hover:text-yellow-900 underline"
+                          >
+                            Sign up
+                          </Button> to save.
+                        </p>
+                      </div>
+                    </div>
+                  </CardContent>
+                </Card>
+              </motion.div>
             )}
             
             <div ref={messagesEndRef} />
           </div>
 
-          {/* Input - 5 lines high */}
-          <div className="bg-white/80 border-t border-gray-200 py-6" style={{ paddingLeft: '24px', paddingRight: '24px' }}>
+          {/* Input */}
+          <div className="bg-white/80 backdrop-blur-sm border-t border-orange-200 p-4">
             <form onSubmit={handleSubmit}>
-              <textarea
-                value={input}
-                onChange={(e) => setInput(e.target.value)}
-                placeholder="Type a message..."
-                disabled={isLoading}
-                rows={5}
-                className="w-full px-4 py-3 border border-gray-300 rounded-2xl resize-none focus:outline-none focus:border-blue-500"
-                onKeyDown={(e) => {
-                  if (e.key === 'Enter' && !e.shiftKey) {
-                    e.preventDefault();
-                    handleSubmit(e);
-                  }
-                }}
-              />
+              <div className="flex space-x-3">
+                <Textarea
+                  value={input}
+                  onChange={(e) => setInput(e.target.value)}
+                  placeholder="Type a message..."
+                  disabled={isLoading}
+                  rows={3}
+                  className="flex-1 resize-none border-orange-300 focus:border-orange-500"
+                  onKeyDown={(e) => {
+                    if (e.key === 'Enter' && !e.shiftKey) {
+                      e.preventDefault();
+                      handleSubmit(e);
+                    }
+                  }}
+                />
+                <Button
+                  type="submit"
+                  disabled={!input.trim() || isLoading}
+                  className="bg-orange-600 hover:bg-orange-700"
+                  size="lg"
+                >
+                  <Send className="w-4 h-4" />
+                </Button>
+              </div>
             </form>
           </div>
         </div>
@@ -295,11 +326,15 @@ function ChatContent() {
 export default function ChatPage() {
   return (
     <Suspense fallback={
-      <div className="h-screen w-full flex items-center justify-center">
-        <div className="text-center">
-          <div className="animate-spin rounded-full h-8 w-8 border-b-2 border-blue-600 mx-auto mb-4"></div>
-          <p className="text-gray-600">Loading chat...</p>
-        </div>
+      <div className="h-screen w-full bg-gradient-to-br from-blue-50 via-white to-orange-50 flex items-center justify-center">
+        <Card className="bg-white/90 backdrop-blur-sm border-orange-200 shadow-xl">
+          <CardContent className="p-8">
+            <div className="text-center">
+              <div className="animate-spin rounded-full h-8 w-8 border-b-2 border-orange-600 mx-auto mb-4"></div>
+              <p className="text-gray-600">Loading chat...</p>
+            </div>
+          </CardContent>
+        </Card>
       </div>
     }>
       <ChatContent />

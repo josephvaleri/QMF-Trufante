@@ -4,6 +4,12 @@ import { useState, useEffect, Suspense } from "react";
 import { useRouter, useSearchParams } from "next/navigation";
 import { supaBrowser } from "@/lib/supabase/client";
 import Image from "next/image";
+import { Button } from "@/components/ui/button";
+import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
+import { Input } from "@/components/ui/input";
+import { Label } from "@/components/ui/label";
+import { motion } from "framer-motion";
+import { Lock, Eye, EyeOff, ArrowLeft } from "lucide-react";
 
 function ResetPasswordContent() {
   const [password, setPassword] = useState("");
@@ -12,6 +18,8 @@ function ResetPasswordContent() {
   const [error, setError] = useState("");
   const [success, setSuccess] = useState("");
   const [isValidSession, setIsValidSession] = useState(false);
+  const [showPassword, setShowPassword] = useState(false);
+  const [showConfirmPassword, setShowConfirmPassword] = useState(false);
   const router = useRouter();
   const searchParams = useSearchParams();
 
@@ -69,131 +77,158 @@ function ResetPasswordContent() {
 
   if (!isValidSession && !error) {
     return (
-      <main className="relative min-h-screen w-full flex items-center justify-center">
-        <div className="bg-white/95 backdrop-blur-sm rounded-2xl shadow-2xl p-8">
-          <div className="text-center">
-            <div className="animate-spin rounded-full h-8 w-8 border-b-2 border-blue-600 mx-auto mb-4"></div>
-            <p className="text-gray-600">Verifying reset link...</p>
-          </div>
-        </div>
-      </main>
+      <div className="min-h-screen bg-gradient-to-br from-blue-50 via-white to-orange-50 flex items-center justify-center p-4">
+        <Card className="bg-white/90 backdrop-blur-sm border-orange-200 shadow-xl">
+          <CardContent className="p-8">
+            <div className="text-center">
+              <div className="animate-spin rounded-full h-8 w-8 border-b-2 border-orange-600 mx-auto mb-4"></div>
+              <p className="text-gray-600">Verifying reset link...</p>
+            </div>
+          </CardContent>
+        </Card>
+      </div>
     );
   }
 
   return (
-    <main className="relative min-h-screen w-full flex items-center justify-center">
-      {/* Background image */}
-      <div className="absolute inset-0 -z-10">
-        <img
-          src="/bg.jpg"
-          alt="Background"
-          className="w-full h-full object-cover"
-        />
-        <div className="absolute inset-0" style={{ background: "var(--bg-overlay)" }} />
-      </div>
-
-      {/* Auth Form */}
-      <div className="w-full max-w-md mx-4">
-        <div className="bg-white/95 backdrop-blur-sm rounded-2xl shadow-2xl p-8">
-          {/* Logo */}
-          <div className="text-center mb-6">
-            <div className="relative w-20 h-20 mx-auto mb-4">
+    <div className="min-h-screen bg-gradient-to-br from-blue-50 via-white to-orange-50 flex items-center justify-center p-4">
+      <motion.div
+        initial={{ opacity: 0, y: 20 }}
+        animate={{ opacity: 1, y: 0 }}
+        className="w-full max-w-md"
+      >
+        <Card className="bg-white/90 backdrop-blur-sm border-orange-200 shadow-xl">
+          <CardHeader className="text-center pb-6">
+            <div className="relative w-16 h-16 mx-auto mb-4">
               <Image
                 src="/qmf-logo.png"
                 alt="Question My Faith"
                 fill
-                sizes="80px"
+                sizes="64px"
                 style={{ objectFit: "contain" }}
                 priority
               />
             </div>
-            <h1 className="text-2xl font-bold" style={{ color: '#1e3a8a' }}>
+            <CardTitle className="text-2xl font-bold text-orange-900">
               Reset Password
-            </h1>
-            <p className="text-gray-600 mt-2">
+            </CardTitle>
+            <CardDescription className="text-orange-700">
               Enter your new password below
-            </p>
-          </div>
+            </CardDescription>
+          </CardHeader>
 
-          {/* Messages */}
-          {error && (
-            <div className="mb-4 p-3 bg-red-100 border border-red-300 text-red-700 rounded-lg text-sm">
-              {error}
+          <CardContent className="space-y-6">
+            {/* Messages */}
+            {error && (
+              <motion.div
+                initial={{ opacity: 0, y: -10 }}
+                animate={{ opacity: 1, y: 0 }}
+                className="p-3 bg-red-50 border border-red-200 text-red-700 rounded-lg text-sm"
+              >
+                {error}
+              </motion.div>
+            )}
+            {success && (
+              <motion.div
+                initial={{ opacity: 0, y: -10 }}
+                animate={{ opacity: 1, y: 0 }}
+                className="p-3 bg-green-50 border border-green-200 text-green-700 rounded-lg text-sm"
+              >
+                {success}
+              </motion.div>
+            )}
+
+            {/* Form */}
+            <form onSubmit={handleResetPassword} className="space-y-4">
+              <div className="space-y-2">
+                <Label htmlFor="password" className="text-orange-900">New Password</Label>
+                <div className="relative">
+                  <Lock className="absolute left-3 top-3 h-4 w-4 text-gray-400" />
+                  <Input
+                    id="password"
+                    type={showPassword ? "text" : "password"}
+                    value={password}
+                    onChange={(e) => setPassword(e.target.value)}
+                    required
+                    minLength={6}
+                    className="pl-10 pr-10 border-orange-300 focus:border-orange-500"
+                    placeholder="Enter your new password"
+                  />
+                  <button
+                    type="button"
+                    onClick={() => setShowPassword(!showPassword)}
+                    className="absolute right-3 top-3 h-4 w-4 text-gray-400 hover:text-gray-600"
+                  >
+                    {showPassword ? <EyeOff className="h-4 w-4" /> : <Eye className="h-4 w-4" />}
+                  </button>
+                </div>
+              </div>
+
+              <div className="space-y-2">
+                <Label htmlFor="confirmPassword" className="text-orange-900">Confirm Password</Label>
+                <div className="relative">
+                  <Lock className="absolute left-3 top-3 h-4 w-4 text-gray-400" />
+                  <Input
+                    id="confirmPassword"
+                    type={showConfirmPassword ? "text" : "password"}
+                    value={confirmPassword}
+                    onChange={(e) => setConfirmPassword(e.target.value)}
+                    required
+                    minLength={6}
+                    className="pl-10 pr-10 border-orange-300 focus:border-orange-500"
+                    placeholder="Confirm your new password"
+                  />
+                  <button
+                    type="button"
+                    onClick={() => setShowConfirmPassword(!showConfirmPassword)}
+                    className="absolute right-3 top-3 h-4 w-4 text-gray-400 hover:text-gray-600"
+                  >
+                    {showConfirmPassword ? <EyeOff className="h-4 w-4" /> : <Eye className="h-4 w-4" />}
+                  </button>
+                </div>
+              </div>
+
+              <Button
+                type="submit"
+                disabled={isLoading || !isValidSession}
+                className="w-full bg-orange-600 hover:bg-orange-700"
+                size="lg"
+              >
+                {isLoading ? "Updating..." : "Update Password"}
+              </Button>
+            </form>
+
+            {/* Back to Sign In */}
+            <div className="text-center">
+              <Button
+                onClick={() => router.push("/auth")}
+                variant="outline"
+                className="border-orange-300 text-orange-700 hover:bg-orange-50"
+              >
+                <ArrowLeft className="w-4 h-4 mr-2" />
+                Back to Sign In
+              </Button>
             </div>
-          )}
-          {success && (
-            <div className="mb-4 p-3 bg-green-100 border border-green-300 text-green-700 rounded-lg text-sm">
-              {success}
-            </div>
-          )}
-
-          {/* Form */}
-          <form onSubmit={handleResetPassword} className="space-y-4">
-            <div>
-              <label className="block text-sm font-medium text-gray-700 mb-1">
-                New Password
-              </label>
-              <input
-                type="password"
-                value={password}
-                onChange={(e) => setPassword(e.target.value)}
-                required
-                minLength={6}
-                className="w-full px-3 py-2 border border-gray-300 rounded-lg focus:outline-none focus:ring-2 focus:ring-blue-500 focus:border-transparent"
-                placeholder="Enter your new password"
-              />
-            </div>
-
-            <div>
-              <label className="block text-sm font-medium text-gray-700 mb-1">
-                Confirm Password
-              </label>
-              <input
-                type="password"
-                value={confirmPassword}
-                onChange={(e) => setConfirmPassword(e.target.value)}
-                required
-                minLength={6}
-                className="w-full px-3 py-2 border border-gray-300 rounded-lg focus:outline-none focus:ring-2 focus:ring-blue-500 focus:border-transparent"
-                placeholder="Confirm your new password"
-              />
-            </div>
-
-            <button
-              type="submit"
-              disabled={isLoading || !isValidSession}
-              className="w-full py-3 px-4 bg-blue-600 hover:bg-blue-700 disabled:bg-blue-400 text-white font-medium rounded-lg transition-colors duration-200"
-            >
-              {isLoading ? "Updating..." : "Update Password"}
-            </button>
-          </form>
-
-          {/* Back to Sign In */}
-          <div className="mt-4 text-center">
-            <button
-              onClick={() => router.push("/auth")}
-              className="text-sm text-blue-600 hover:text-blue-800 transition-colors"
-            >
-              Back to Sign In
-            </button>
-          </div>
-        </div>
-      </div>
-    </main>
+          </CardContent>
+        </Card>
+      </motion.div>
+    </div>
   );
 }
 
 export default function ResetPasswordPage() {
   return (
     <Suspense fallback={
-      <main className="relative min-h-screen w-full flex items-center justify-center">
-        <div className="bg-white/95 backdrop-blur-sm rounded-2xl shadow-2xl p-8">
-          <div className="text-center">
-            <div className="animate-spin rounded-full h-8 w-8 border-b-2 border-blue-600 mx-auto mb-4"></div>
-            <p className="text-gray-600">Loading...</p>
-          </div>
-        </div>
-      </main>
+      <div className="min-h-screen bg-gradient-to-br from-blue-50 via-white to-orange-50 flex items-center justify-center p-4">
+        <Card className="bg-white/90 backdrop-blur-sm border-orange-200 shadow-xl">
+          <CardContent className="p-8">
+            <div className="text-center">
+              <div className="animate-spin rounded-full h-8 w-8 border-b-2 border-orange-600 mx-auto mb-4"></div>
+              <p className="text-gray-600">Loading...</p>
+            </div>
+          </CardContent>
+        </Card>
+      </div>
     }>
       <ResetPasswordContent />
     </Suspense>

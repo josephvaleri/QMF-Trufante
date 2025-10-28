@@ -1,53 +1,79 @@
-import { NextRequest, NextResponse } from "next/server";
-import { supaServer } from "@/lib/supabase/server";
-import { z } from "zod";
+import { NextRequest, NextResponse } from 'next/server';
+import { createClient } from '@/lib/supabase/server';
 
-const actions = ['accept','deny','edit'] as const;
-const paramsSchema = z.object({ action: z.enum(actions) });
-const bodySchema = z.object({
-  qna_id: z.number(),
-  edited_answer: z.string().optional(),
-  moderator_notes: z.string().optional()
-});
-
-export async function POST(req: NextRequest, ctx: { params: Promise<{ action: string }> }) {
+export async function POST(
+  request: NextRequest,
+  { params }: { params: Promise<{ action: string }> }
+) {
   try {
-    const params = await ctx.params;
-    const { action } = paramsSchema.parse(params);
-    const supa = supaServer();
+    const { action } = await params;
+    const supabase = createClient();
+    const { data: { user }, error: authError } = await supabase.auth.getUser();
 
-    // Require moderator/admin
-    const { data: auth } = await supa.auth.getUser();
-    if (!auth?.user) return NextResponse.json({ error: 'Unauthorized' }, { status: 401 });
-
-    const { data: me } = await supa.from('profiles').select('role').eq('user_id', auth.user.id).single();
-    if (!me || !['moderator','admin'].includes(me.role)) {
-      return NextResponse.json({ error: 'Forbidden' }, { status: 403 });
+    if (authError || !user) {
+      return NextResponse.json({ error: 'Unauthorized' }, { status: 401 });
     }
 
-    const { qna_id, edited_answer, moderator_notes } = bodySchema.parse(await req.json());
-    const status = action === 'accept' ? 'accepted' : action === 'deny' ? 'denied' : 'edited';
+    // Check if user is moderator or admin
+    const { data: profile, error: profileError } = await supabase
+      .from('profiles')
+      .select('role')
+      .eq('user_id', user.id)
+      .single();
 
-    const { error } = await supa
+    if (profileError || !profile || (profile.role !== 'moderator' && profile.role !== 'admin')) {
+      return NextResponse.json({ error: 'Access denied' }, { status: 403 });
+    }
+
+    const { qnaId, editedAnswer, moderatorNotes } = await request.json();
+
+    if (!qnaId) {
+      return NextResponse.json({ error: 'QnA ID is required' }, { status: 400 });
+    }
+
+    const updateData: any = {
+      status: action,
+      moderator_id: user.id,
+      decided_at: new Date().toISOString()
+    };
+
+    if (action === 'edit' && editedAnswer) {
+      updateData.edited_answer = editedAnswer;
+    }
+
+    if (moderatorNotes) {
+      updateData.moderator_notes = moderatorNotes;
+    }
+
+    const { error: updateError } = await supabase
       .from('moderation_queue')
-      .update({
-        status,
-        moderator_id: auth.user.id,
-        moderator_notes: moderator_notes ?? null,
-        edited_answer: action === 'edit' ? (edited_answer ?? '') : null,
-        decided_at: new Date().toISOString()
-      })
-      .eq('qna_id', qna_id)
-      .eq('status', 'pending');
+      .update(updateData)
+      .eq('id', qnaId);
 
-    if (error) return NextResponse.json({ error: error.message }, { status: 400 });
+    if (updateError) {
+      console.error('Error updating moderation queue:', updateError);
+      return NextResponse.json({ error: 'Failed to update moderation status' }, { status: 500 });
+    }
 
-    return NextResponse.json({ ok: true, status });
+    // Check if we've reached 20 accepted items for retraining
+    if (action === 'accept' || action === 'edit') {
+      const { data: acceptedCount, error: countError } = await supabase
+        .from('moderation_queue')
+        .select('id', { count: 'exact' })
+        .in('status', ['accepted', 'edited']);
+
+      if (!countError && acceptedCount && acceptedCount.length >= 20) {
+        // Trigger retraining process
+        console.log('Reached 20 accepted items - triggering model retraining');
+        // TODO: Implement actual retraining logic here
+        // This could involve calling an external API or triggering a background job
+      }
+    }
+
+    return NextResponse.json({ success: true });
+
   } catch (error) {
-    console.error('Moderation API Error:', error);
-    return NextResponse.json({ 
-      error: 'Internal server error',
-      details: error instanceof Error ? error.message : 'Unknown error'
-    }, { status: 500 });
+    console.error('Moderation API error:', error);
+    return NextResponse.json({ error: 'Internal server error' }, { status: 500 });
   }
 }

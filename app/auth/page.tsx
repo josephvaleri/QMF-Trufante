@@ -1,298 +1,320 @@
 "use client";
 
-import { useState, useEffect } from "react";
-import { useRouter } from "next/navigation";
+import { useState, useEffect, Suspense } from "react";
+import { useRouter, useSearchParams } from "next/navigation";
 import { supaBrowser } from "@/lib/supabase/client";
 import Image from "next/image";
+import { Button } from "@/components/ui/button";
+import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
+import { Input } from "@/components/ui/input";
+import { Label } from "@/components/ui/label";
+import { Separator } from "@/components/ui/separator";
+import { motion } from "framer-motion";
+import { Heart, User, Lock, Mail, Eye, EyeOff } from "lucide-react";
 
-const RELIGIONS = [
-  'Prefer not to say',
-  'Agnostic',
-  'Atheist',
-  'Baha\'i',
-  'Buddhist',
-  'Christian',
-  'Hindu',
-  'Jain',
-  'Jewish',
-  'Muslim',
-  'Shinto',
-  'Sikh',
-  'Taoist',
-  'Zoroastrian',
-  'Other'
-];
-
-export default function AuthPage() {
+function AuthContent() {
+  const [isLogin, setIsLogin] = useState(true);
   const [email, setEmail] = useState("");
   const [password, setPassword] = useState("");
-  const [fullName, setFullName] = useState("");
   const [preferredName, setPreferredName] = useState("");
-  const [religion, setReligion] = useState("Prefer not to say");
   const [isLoading, setIsLoading] = useState(false);
   const [error, setError] = useState("");
-  const [isSignUp, setIsSignUp] = useState(false);
-  const [isLoggedIn, setIsLoggedIn] = useState(false);
+  const [success, setSuccess] = useState("");
+  const [showPassword, setShowPassword] = useState(false);
   const router = useRouter();
+  const searchParams = useSearchParams();
 
   const supabase = supaBrowser();
 
   useEffect(() => {
     // Check if user is already logged in
-    const checkSession = async () => {
-      const { data: { session } } = await supabase.auth.getSession();
-      if (session) {
-        setIsLoggedIn(true);
-        router.push("/");
+    const checkUser = async () => {
+      const { data: { user } } = await supabase.auth.getUser();
+      if (user) {
+        router.push('/');
       }
     };
-
-    checkSession();
+    checkUser();
   }, [supabase.auth, router]);
 
-  async function handleSubmit(e: React.FormEvent) {
+  async function handleLogin(e: React.FormEvent) {
     e.preventDefault();
     setIsLoading(true);
     setError("");
+    setSuccess("");
 
     try {
-      if (isSignUp) {
-        // Sign up flow
-        const { data, error: signUpError } = await supabase.auth.signUp({
-          email,
-          password,
-          options: {
-            data: {
-              full_name: fullName,
-              preferred_name: preferredName
-            }
-          }
-        });
+      const { error } = await supabase.auth.signInWithPassword({
+        email,
+        password,
+      });
 
-        if (signUpError) throw signUpError;
+      if (error) throw error;
 
-        if (data.user) {
-          // Create profile
-          const { error: profileError } = await supabase
-            .from('profiles')
-            .insert({
-              user_id: data.user.id,
-              email: email,
-              full_name: fullName,
-              preferred_name: preferredName,
-              religion: religion === 'Prefer not to say' ? null : religion
-            });
-
-          if (profileError) {
-            console.error('Profile creation error:', profileError);
-          }
-
-          setError("Check your email to verify your account!");
-        }
-      } else {
-        // Sign in flow
-        const { error: signInError } = await supabase.auth.signInWithPassword({
-          email,
-          password
-        });
-
-        if (signInError) throw signInError;
-
-        // Redirect to home
-        router.push("/");
-      }
+      setSuccess("Login successful! Redirecting...");
+      setTimeout(() => {
+        router.push('/');
+      }, 1000);
     } catch (error: any) {
-      setError(error.message || "An error occurred");
+      setError(error.message || "An error occurred during login");
     } finally {
       setIsLoading(false);
     }
   }
 
-  if (isLoggedIn) {
-    return (
-      <main className="relative min-h-screen w-full flex items-center justify-center">
-        <div className="bg-white/95 backdrop-blur-sm rounded-2xl shadow-2xl p-8">
-          <div className="text-center">
-            <div className="animate-spin rounded-full h-8 w-8 border-b-2 border-blue-600 mx-auto mb-4"></div>
-            <p className="text-gray-600">Redirecting...</p>
-          </div>
-        </div>
-      </main>
-    );
+  async function handleSignup(e: React.FormEvent) {
+    e.preventDefault();
+    setIsLoading(true);
+    setError("");
+    setSuccess("");
+
+    try {
+      // Sign up the user
+      const { data: authData, error: authError } = await supabase.auth.signUp({
+        email,
+        password,
+      });
+
+      if (authError) throw authError;
+
+      if (!authData.user) {
+        throw new Error('Failed to create account');
+      }
+
+      // Create user profile
+      const { error: profileError } = await supabase
+        .from('profiles')
+        .insert({
+          user_id: authData.user.id,
+          email,
+          preferred_name: preferredName,
+          role: 'user'
+        });
+
+      if (profileError) {
+        console.error('Profile creation error:', profileError);
+        // Don't fail the signup if profile creation fails
+      }
+
+      setSuccess("Account created successfully! Please check your email to verify your account.");
+      setTimeout(() => {
+        router.push('/');
+      }, 2000);
+    } catch (error: any) {
+      setError(error.message || "An error occurred during signup");
+    } finally {
+      setIsLoading(false);
+    }
+  }
+
+  async function handleForgotPassword() {
+    if (!email) {
+      setError("Please enter your email address first");
+      return;
+    }
+
+    try {
+      const { error } = await supabase.auth.resetPasswordForEmail(email, {
+        redirectTo: `${window.location.origin}/auth/reset-password`,
+      });
+
+      if (error) throw error;
+
+      setSuccess("Password reset email sent! Check your inbox.");
+    } catch (error: any) {
+      setError(error.message || "Failed to send reset email");
+    }
   }
 
   return (
-    <main className="relative min-h-screen w-full flex items-center justify-center" style={{ fontFamily: 'Garamond, serif' }}>
-      {/* Background image */}
-      <div className="absolute inset-0 -z-10">
-        <img
-          src="/bg.jpg"
-          alt="Background"
-          className="w-full h-full object-cover"
-        />
-        <div className="absolute inset-0" style={{ background: "var(--bg-overlay)" }} />
-      </div>
-
-      {/* Auth Form */}
-      <div className="w-1/2 max-w-md mx-auto">
-        <div className="backdrop-blur-sm rounded-3xl shadow-2xl p-8 border border-white/50" style={{ backgroundColor: 'rgba(255, 255, 255, 0.5)' }}>
-          {/* Logo */}
-          <div className="text-center mb-6">
-            <div className="relative w-20 h-20 mx-auto mb-4">
+    <div className="min-h-screen bg-gradient-to-br from-blue-50 via-white to-orange-50 flex items-center justify-center p-4">
+      <motion.div
+        initial={{ opacity: 0, y: 20 }}
+        animate={{ opacity: 1, y: 0 }}
+        className="w-full max-w-md"
+      >
+        <Card className="bg-white/90 backdrop-blur-sm border-orange-200 shadow-xl">
+          <CardHeader className="text-center pb-6">
+            <div className="relative w-16 h-16 mx-auto mb-4">
               <Image
                 src="/qmf-logo.png"
                 alt="Question My Faith"
                 fill
-                sizes="80px"
+                sizes="64px"
                 style={{ objectFit: "contain" }}
                 priority
               />
             </div>
-            <h1 className="text-3xl font-bold italic" style={{ color: '#1e3a8a' }}>
-              {isSignUp ? "Create Account" : "Welcome Back"}
-            </h1>
-            <p className="text-gray-700 mt-2 text-sm">
-              {isSignUp ? "Sign up to save your conversations" : "Sign in to continue"}
-            </p>
-          </div>
+            <CardTitle className="text-2xl font-bold text-orange-900">
+              {isLogin ? 'Welcome Back' : 'Create Account'}
+            </CardTitle>
+            <CardDescription className="text-orange-700">
+              {isLogin 
+                ? 'Sign in to save your spiritual conversations' 
+                : 'Optional - you can use the chat without an account'
+              }
+            </CardDescription>
+          </CardHeader>
 
-          {/* Error Message */}
-          {error && (
-            <div className="mb-4 p-3 bg-red-100 border border-red-300 text-red-700 rounded-lg text-sm">
-              {error}
-            </div>
-          )}
-
-          {/* Form */}
-          <form onSubmit={handleSubmit} className="space-y-4 w-4/5 mx-auto">
-            {isSignUp && (
-              <>
-                <div>
-                  <label className="block text-sm font-medium text-gray-700 mb-1">
-                    Full Name
-                  </label>
-                  <input
-                    type="text"
-                    value={fullName}
-                    onChange={(e) => setFullName(e.target.value)}
-                    required={isSignUp}
-                    className="w-full px-3 py-2 border border-gray-300 rounded-lg focus:outline-none focus:ring-2 focus:ring-blue-500 focus:border-transparent"
-                    placeholder="Enter your full name"
-                  />
-                </div>
-
-                <div>
-                  <label className="block text-sm font-medium text-gray-700 mb-1">
-                    Preferred Name (optional)
-                  </label>
-                  <input
-                    type="text"
-                    value={preferredName}
-                    onChange={(e) => setPreferredName(e.target.value)}
-                    className="w-full px-3 py-2 border border-gray-300 rounded-lg focus:outline-none focus:ring-2 focus:ring-blue-500 focus:border-transparent"
-                    placeholder="What should we call you?"
-                  />
-                </div>
-
-                <div>
-                  <label className="block text-sm font-medium text-gray-700 mb-1">
-                    Religion (optional)
-                  </label>
-                  <select
-                    value={religion}
-                    onChange={(e) => setReligion(e.target.value)}
-                    className="w-full px-3 py-2 border border-gray-300 rounded-lg focus:outline-none focus:ring-2 focus:ring-blue-500 focus:border-transparent bg-white"
-                  >
-                    {RELIGIONS.map(rel => (
-                      <option key={rel} value={rel}>{rel}</option>
-                    ))}
-                  </select>
-                </div>
-              </>
+          <CardContent className="space-y-6">
+            {/* Messages */}
+            {error && (
+              <motion.div
+                initial={{ opacity: 0, y: -10 }}
+                animate={{ opacity: 1, y: 0 }}
+                className="p-3 bg-red-50 border border-red-200 text-red-700 rounded-lg text-sm"
+              >
+                {error}
+              </motion.div>
+            )}
+            {success && (
+              <motion.div
+                initial={{ opacity: 0, y: -10 }}
+                animate={{ opacity: 1, y: 0 }}
+                className="p-3 bg-green-50 border border-green-200 text-green-700 rounded-lg text-sm"
+              >
+                {success}
+              </motion.div>
             )}
 
-            <div>
-              <label className="block text-sm font-medium text-gray-700 mb-1">
-                Email
-              </label>
-              <input
-                type="email"
-                value={email}
-                onChange={(e) => setEmail(e.target.value)}
-                required
-                className="w-full px-3 py-2 border border-gray-300 rounded-lg focus:outline-none focus:ring-2 focus:ring-blue-500 focus:border-transparent"
-                placeholder="Enter your email"
-              />
-            </div>
+            {/* Form */}
+            <form onSubmit={isLogin ? handleLogin : handleSignup} className="space-y-4">
+              <div className="space-y-2">
+                <Label htmlFor="email" className="text-orange-900">Email Address</Label>
+                <div className="relative">
+                  <Mail className="absolute left-3 top-3 h-4 w-4 text-gray-400" />
+                  <Input
+                    id="email"
+                    type="email"
+                    value={email}
+                    onChange={(e) => setEmail(e.target.value)}
+                    required
+                    className="pl-10 border-orange-300 focus:border-orange-500"
+                    placeholder="Enter your email"
+                  />
+                </div>
+              </div>
 
-            <div>
-              <label className="block text-sm font-medium text-gray-700 mb-1">
-                Password
-              </label>
-              <input
-                type="password"
-                value={password}
-                onChange={(e) => setPassword(e.target.value)}
-                required
-                minLength={6}
-                className="w-full px-3 py-2 border border-gray-300 rounded-lg focus:outline-none focus:ring-2 focus:ring-blue-500 focus:border-transparent"
-                placeholder="Enter your password"
-              />
-            </div>
+              <div className="space-y-2">
+                <Label htmlFor="password" className="text-orange-900">Password</Label>
+                <div className="relative">
+                  <Lock className="absolute left-3 top-3 h-4 w-4 text-gray-400" />
+                  <Input
+                    id="password"
+                    type={showPassword ? "text" : "password"}
+                    value={password}
+                    onChange={(e) => setPassword(e.target.value)}
+                    required
+                    minLength={6}
+                    className="pl-10 pr-10 border-orange-300 focus:border-orange-500"
+                    placeholder="Enter your password"
+                  />
+                  <button
+                    type="button"
+                    onClick={() => setShowPassword(!showPassword)}
+                    className="absolute right-3 top-3 h-4 w-4 text-gray-400 hover:text-gray-600"
+                  >
+                    {showPassword ? <EyeOff className="h-4 w-4" /> : <Eye className="h-4 w-4" />}
+                  </button>
+                </div>
+              </div>
 
-            {!isSignUp && (
-              <div className="text-sm text-right">
-                <button
-                  type="button"
-                  onClick={() => {
-                    // TODO: Implement password reset
-                    setError("Password reset not yet implemented. Please contact support.");
-                  }}
-                  className="text-blue-600 hover:text-blue-800 transition-colors"
+              {!isLogin && (
+                <div className="space-y-2">
+                  <Label htmlFor="preferredName" className="text-orange-900">Preferred Name</Label>
+                  <div className="relative">
+                    <User className="absolute left-3 top-3 h-4 w-4 text-gray-400" />
+                    <Input
+                      id="preferredName"
+                      type="text"
+                      value={preferredName}
+                      onChange={(e) => setPreferredName(e.target.value)}
+                      required
+                      className="pl-10 border-orange-300 focus:border-orange-500"
+                      placeholder="How should we call you?"
+                    />
+                  </div>
+                </div>
+              )}
+
+              <Button
+                type="submit"
+                disabled={isLoading}
+                className="w-full bg-orange-600 hover:bg-orange-700"
+                size="lg"
+              >
+                {isLoading 
+                  ? (isLogin ? 'Signing in...' : 'Creating account...') 
+                  : (isLogin ? 'Sign In' : 'Create Account')
+                }
+              </Button>
+            </form>
+
+            {/* Forgot Password */}
+            {isLogin && (
+              <div className="text-center">
+                <Button
+                  onClick={handleForgotPassword}
+                  variant="link"
+                  className="text-orange-600 hover:text-orange-800"
                 >
-                  Forgot password?
-                </button>
+                  Forgot your password?
+                </Button>
               </div>
             )}
 
-            <button
-              type="submit"
-              disabled={isLoading}
-              className="w-full py-3 px-4 bg-blue-600 hover:bg-blue-700 disabled:bg-blue-400 text-white font-medium rounded-xl transition-colors duration-200 shadow-md hover:shadow-lg"
-              style={{ fontWeight: 'bold', fontSize: '16px' }}
-            >
-              {isLoading ? "Loading..." : isSignUp ? "Create Account" : "Sign In"}
-            </button>
-          </form>
+            <Separator className="my-6" />
 
-          {/* Toggle between Sign In and Sign Up */}
-          <div className="mt-6 text-center">
-            <p className="text-sm text-gray-600">
-              {isSignUp ? "Already have an account? " : "Don't have an account? "}
-              <button
-                type="button"
+            {/* Toggle between login/signup */}
+            <div className="text-center">
+              <Button
                 onClick={() => {
-                  setIsSignUp(!isSignUp);
+                  setIsLogin(!isLogin);
                   setError("");
+                  setSuccess("");
                 }}
-                className="text-blue-600 hover:text-blue-800 font-medium transition-colors"
+                variant="outline"
+                className="w-full border-orange-300 text-orange-700 hover:bg-orange-50"
               >
-                {isSignUp ? "Sign In" : "Sign Up"}
-              </button>
-            </p>
-          </div>
+                {isLogin 
+                  ? "Don't have an account? Sign up" 
+                  : "Already have an account? Sign in"
+                }
+              </Button>
+            </div>
 
-          {/* Back to Home */}
-          <div className="mt-4 text-center">
-            <button
-              onClick={() => router.push("/")}
-              className="text-sm text-gray-600 hover:text-gray-800 transition-colors font-medium"
-            >
-              ← Back to Home
-            </button>
-          </div>
-        </div>
+            {/* Continue without account */}
+            <div className="text-center">
+              <Button
+                onClick={() => router.push('/')}
+                variant="ghost"
+                className="text-gray-600 hover:text-gray-800"
+              >
+                Continue without account
+              </Button>
+            </div>
+          </CardContent>
+        </Card>
+      </motion.div>
+    </div>
+  );
+}
+
+export default function AuthPage() {
+  return (
+    <Suspense fallback={
+      <div className="min-h-screen bg-gradient-to-br from-blue-50 via-white to-orange-50 flex items-center justify-center">
+        <Card className="bg-white/90 backdrop-blur-sm border-orange-200 shadow-xl">
+          <CardContent className="p-8">
+            <div className="text-center">
+              <div className="animate-spin rounded-full h-8 w-8 border-b-2 border-orange-600 mx-auto mb-4"></div>
+              <p className="text-gray-600">Loading...</p>
+            </div>
+          </CardContent>
+        </Card>
       </div>
-    </main>
+    }>
+      <AuthContent />
+    </Suspense>
   );
 }
