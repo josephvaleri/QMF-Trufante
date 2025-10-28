@@ -378,7 +378,7 @@ export default function ModerationPage() {
                                   className="bg-orange-600 hover:bg-orange-700"
                                 >
                                   <Check className="w-4 h-4 mr-1" />
-                                  Save Edit
+                                  Save and Accept
                                 </Button>
                                 <Button
                                   onClick={cancelEdit}

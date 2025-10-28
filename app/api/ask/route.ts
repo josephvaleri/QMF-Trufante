@@ -1,6 +1,7 @@
 import { NextRequest } from "next/server";
 import OpenAI from "openai";
 import { cookies } from "next/headers";
+import { createServerClient } from '@supabase/ssr';
 import { supaServer } from "@/lib/supabase/server";
 import { moderationService } from "@/lib/moderation";
 import { detectCrisis, crisisResources } from "@/lib/crisis";
@@ -69,6 +70,30 @@ export async function POST(req: NextRequest) {
       apiKey: process.env.OPENAI_API_KEY
     });
 
+    // Create Supabase client with cookies for authentication
+    const cookieStore = await cookies();
+    const supabase = createServerClient(
+      process.env.NEXT_PUBLIC_SUPABASE_URL!,
+      process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY!,
+      {
+        cookies: {
+          get(name: string) {
+            return cookieStore.get(name)?.value;
+          },
+          set(name: string, value: string, options: any) {
+            // No-op for API routes
+          },
+          remove(name: string, options: any) {
+            // No-op for API routes
+          },
+        },
+      }
+    );
+
+    // Get authenticated user
+    const { data: { user }, error: authError } = await supabase.auth.getUser();
+    console.log('Auth check result:', { user: !!user, authError });
+
     const supa = supaServer();
 
     // Get current model version and configuration
@@ -108,9 +133,7 @@ Model Version: ${currentModelVersion}`;
       frequency_penalty: 0.1
     });
 
-    // Get basic auth info quickly (don't block on DB queries)
-    const { data: auth } = await supa.auth.getUser();
-    const cookieStore = await cookies();
+    // Get anonymous session if user is not authenticated
     let anon = cookieStore.get('qmf_anon_session')?.value ?? null;
 
     // Collect full response for DB storage
@@ -158,7 +181,7 @@ Model Version: ${currentModelVersion}`;
           console.log('Stream complete, saving to database...');
           
           // Create or verify anonymous session if user is not authenticated
-          if (!auth.user && !anon) {
+          if (!user && !anon) {
             // No cookie - create new session
             const { data: anonSession, error: anonErr } = await supa
               .from('anon_sessions')
@@ -177,8 +200,8 @@ Model Version: ${currentModelVersion}`;
           
           // Persist Q&A row
           console.log('Attempting to insert Q&A:', {
-            user_id: auth.user?.id ?? null,
-            anon_session_id: auth.user ? null : anon,
+            user_id: user?.id ?? null,
+            anon_session_id: user ? null : anon,
             user_question: question,
             assistant_answer: fullResponse?.substring(0, 100) + '...'
           });
@@ -186,8 +209,8 @@ Model Version: ${currentModelVersion}`;
           const { data: qnaRow, error: insErr } = await supa
             .from('qna')
             .insert({
-              user_id: auth.user?.id ?? null,
-              anon_session_id: auth.user ? null : anon,
+              user_id: user?.id ?? null,
+              anon_session_id: user ? null : anon,
               user_question: question,
               assistant_answer: fullResponse
             })
@@ -196,7 +219,7 @@ Model Version: ${currentModelVersion}`;
 
           if (insErr || !qnaRow) {
             console.error('Failed to insert Q&A:', insErr);
-            console.error('Auth user:', auth.user);
+            console.error('Auth user:', user);
             console.error('Anon session:', anon);
             // Continue even if DB insert fails
           } else {
@@ -256,7 +279,7 @@ Model Version: ${currentModelVersion}`;
     };
 
     // Set anonymous session cookie if needed
-    if (anon && !auth.user) {
+    if (anon && !user) {
       headers['Set-Cookie'] = `qmf_anon_session=${anon}; Path=/; Max-Age=2592000; HttpOnly; SameSite=Lax`;
     }
 

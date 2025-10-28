@@ -6,18 +6,30 @@ export async function POST(request: NextRequest) {
     const supabase = supaServer();
     
     // Get all accepted/edited Q&A pairs for retraining
+    console.log('Fetching accepted Q&A pairs from qna_accepted view...');
     const { data: acceptedQna, error: qnaError } = await supabase
       .from('qna_accepted')
       .select('*')
       .order('created_at', { ascending: true });
 
+    console.log('QnA query result:', { acceptedQna: acceptedQna?.length, qnaError });
+
     if (qnaError) {
       console.error('Error fetching accepted Q&A pairs:', qnaError);
-      return NextResponse.json({ error: 'Failed to fetch training data' }, { status: 500 });
+      // Don't fail the entire moderation process if retraining fails
+      return NextResponse.json({ 
+        success: true, 
+        message: 'Moderation completed, but retraining failed',
+        error: 'Failed to fetch training data for retraining'
+      });
     }
 
     if (!acceptedQna || acceptedQna.length === 0) {
-      return NextResponse.json({ error: 'No training data available' }, { status: 400 });
+      console.log('No training data available, skipping retraining');
+      return NextResponse.json({ 
+        success: true, 
+        message: 'Moderation completed, no training data available for retraining'
+      });
     }
 
     console.log(`Retraining model with ${acceptedQna.length} Q&A pairs`);

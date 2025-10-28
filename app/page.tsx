@@ -168,113 +168,91 @@ export default function HomePage() {
         </div>
       </header>
 
-      {/* Main Content */}
-      <div className="relative z-10 flex items-center justify-center min-h-[calc(100vh-80px)]">
-        <div className="container mx-auto px-4 py-8">
+      {/* Main Logo Section */}
+      <div className="relative z-10 py-8">
+        <div className="container mx-auto px-4">
           <div className="max-w-6xl mx-auto">
-            {/* Welcome Message for Logged In Users */}
-            {isLoggedIn && userProfile && (
+            <motion.div
+              initial={{ opacity: 0, y: 20 }}
+              animate={{ opacity: 1, y: 0 }}
+              transition={{ delay: 0.1 }}
+              className="text-center"
+            >
+              <div className="relative w-60 h-60 mx-auto mb-6">
+                <Image
+                  src="/qmf-logo.png"
+                  alt="Question My Faith"
+                  fill
+                  sizes="240px"
+                  style={{ objectFit: "contain" }}
+                  priority
+                />
+              </div>
+              <h1 className="text-4xl font-bold text-white mb-4" style={{ textShadow: '2px 2px 4px rgba(0,0,0,0.7)' }}>
+                How is your faith?
+              </h1>
+              <p className="text-white/90 text-lg mb-8" style={{ textShadow: '1px 1px 2px rgba(0,0,0,0.5)' }}>
+                A private dialogue to help you explore your spiritual journey
+              </p>
+
+              {/* Question Form - Full Width */}
               <motion.div
                 initial={{ opacity: 0, y: 20 }}
                 animate={{ opacity: 1, y: 0 }}
-                className="mb-8"
+                transition={{ delay: 0.2 }}
+                className="max-w-2xl mx-auto"
               >
-                <Card className="bg-white/20 backdrop-blur-sm border-white/30">
-                  <CardContent className="p-6">
-                    <div className="flex items-center space-x-3">
-                      <div className="w-12 h-12 bg-gradient-to-br from-orange-400 to-orange-600 rounded-full flex items-center justify-center">
-                        <Heart className="w-6 h-6 text-white" />
-                      </div>
-                      <div>
-                        <h2 className="text-xl font-semibold text-white">
-                          Welcome back{userProfile.preferred_name ? `, ${userProfile.preferred_name}` : ''}!
-                        </h2>
-                        <p className="text-white/90">
-                          Your spiritual conversations will be saved and you can continue your journey.
-                        </p>
-                      </div>
-                    </div>
-                  </CardContent>
-                </Card>
+                <form onSubmit={handleSubmit} className="space-y-4">
+                  <div>
+                    <Textarea
+                      value={question}
+                      onChange={(e) => setQuestion(e.target.value)}
+                      placeholder="Ask about your faith..."
+                      disabled={isLoading}
+                      rows={4}
+                      className="resize-none border-white/30 focus:border-orange-400 bg-white/5 text-white placeholder:text-white/70"
+                      onKeyDown={(e) => {
+                        if (e.key === 'Enter' && !e.shiftKey) {
+                          e.preventDefault();
+                          handleSubmit(e);
+                        }
+                      }}
+                    />
+                  </div>
+                  <Button
+                    type="submit"
+                    disabled={!question.trim() || isLoading}
+                    className="w-full bg-orange-600/90 hover:bg-orange-700/90 text-white border-0"
+                    size="lg"
+                  >
+                    {isLoading ? (
+                      <>
+                        <div className="animate-spin rounded-full h-4 w-4 border-b-2 border-white mr-2"></div>
+                        Processing...
+                      </>
+                    ) : (
+                      <>
+                        <MessageCircle className="w-5 h-5 mr-2" />
+                        Start Conversation
+                      </>
+                    )}
+                  </Button>
+                </form>
               </motion.div>
-            )}
+            </motion.div>
+          </div>
+        </div>
+      </div>
+
+      {/* Main Content */}
+      <div className="relative z-10 flex items-center justify-center min-h-[calc(100vh-400px)]">
+        <div className="container mx-auto px-4 py-8">
+          <div className="max-w-6xl mx-auto">
 
             {/* Main Content Grid */}
             <div className="grid grid-cols-1 lg:grid-cols-2 gap-8">
-              {/* Left Column: Main Question Interface */}
+              {/* Left Column: Description */}
               <div className="space-y-6">
-                {/* Main Logo and Title */}
-                <motion.div
-                  initial={{ opacity: 0, y: 20 }}
-                  animate={{ opacity: 1, y: 0 }}
-                  transition={{ delay: 0.1 }}
-                  className="text-center"
-                >
-                  <div className="relative w-48 h-48 mx-auto mb-6">
-                    <Image
-                      src="/qmf-logo.png"
-                      alt="Question My Faith"
-                      fill
-                      sizes="192px"
-                      style={{ objectFit: "contain" }}
-                      priority
-                    />
-                  </div>
-                  <h1 className="text-4xl font-bold text-white mb-4" style={{ textShadow: '2px 2px 4px rgba(0,0,0,0.7)' }}>
-                    How is your faith?
-                  </h1>
-                  <p className="text-white/90 text-lg" style={{ textShadow: '1px 1px 2px rgba(0,0,0,0.5)' }}>
-                    A private dialogue to help you explore your spiritual journey
-                  </p>
-                </motion.div>
-
-                {/* Question Form */}
-                <motion.div
-                  initial={{ opacity: 0, y: 20 }}
-                  animate={{ opacity: 1, y: 0 }}
-                  transition={{ delay: 0.2 }}
-                >
-                  <Card className="bg-white/20 backdrop-blur-sm border-white/30">
-                    <CardContent className="p-6">
-                      <form onSubmit={handleSubmit} className="space-y-4">
-                        <div>
-                          <Textarea
-                            value={question}
-                            onChange={(e) => setQuestion(e.target.value)}
-                            placeholder="Ask about your faith..."
-                            disabled={isLoading}
-                            rows={4}
-                            className="resize-none border-white/30 focus:border-orange-400 bg-white/10 text-white placeholder:text-white/70"
-                            onKeyDown={(e) => {
-                              if (e.key === 'Enter' && !e.shiftKey) {
-                                e.preventDefault();
-                                handleSubmit(e);
-                              }
-                            }}
-                          />
-                        </div>
-                        <Button
-                          type="submit"
-                          disabled={!question.trim() || isLoading}
-                          className="w-full bg-orange-600/90 hover:bg-orange-700/90 text-white border-0"
-                          size="lg"
-                        >
-                          {isLoading ? (
-                            <>
-                              <div className="animate-spin rounded-full h-4 w-4 border-b-2 border-white mr-2"></div>
-                              Processing...
-                            </>
-                          ) : (
-                            <>
-                              <MessageCircle className="w-5 h-5 mr-2" />
-                              Start Conversation
-                            </>
-                          )}
-                        </Button>
-                      </form>
-                    </CardContent>
-                  </Card>
-                </motion.div>
 
                 {/* Description */}
                 <motion.div
@@ -296,6 +274,33 @@ export default function HomePage() {
 
               {/* Right Column: Features and Info */}
               <div className="space-y-6">
+                {/* Welcome Message for Logged In Users */}
+                {isLoggedIn && userProfile && (
+                  <motion.div
+                    initial={{ opacity: 0, y: 20 }}
+                    animate={{ opacity: 1, y: 0 }}
+                    transition={{ delay: 0.3 }}
+                  >
+                    <Card className="bg-white/20 backdrop-blur-sm border-white/30">
+                      <CardContent className="p-6">
+                        <div className="flex items-center space-x-3">
+                          <div className="w-12 h-12 bg-gradient-to-br from-orange-400 to-orange-600 rounded-full flex items-center justify-center">
+                            <Heart className="w-6 h-6 text-white" />
+                          </div>
+                          <div>
+                            <h2 className="text-xl font-semibold text-white">
+                              Welcome back{userProfile.preferred_name ? `, ${userProfile.preferred_name}` : ''}!
+                            </h2>
+                            <p className="text-white/90">
+                              Your spiritual conversations will be saved and you can continue your journey.
+                            </p>
+                          </div>
+                        </div>
+                      </CardContent>
+                    </Card>
+                  </motion.div>
+                )}
+
                 {/* Features Card */}
                 <motion.div
                   initial={{ opacity: 0, y: 20 }}
