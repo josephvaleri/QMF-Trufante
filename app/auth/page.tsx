@@ -31,7 +31,7 @@ function AuthContent() {
     const checkUser = async () => {
       const { data: { user } } = await supabase.auth.getUser();
       if (user) {
-        router.push('/');
+        router.push('/chat');
       }
     };
     checkUser();
@@ -53,7 +53,7 @@ function AuthContent() {
 
       setSuccess("Login successful! Redirecting...");
       setTimeout(() => {
-        router.push('/');
+        router.push('/chat');
       }, 1000);
     } catch (error: any) {
       setError(error.message || "An error occurred during login");
@@ -98,7 +98,7 @@ function AuthContent() {
 
       setSuccess("Account created successfully! Please check your email to verify your account.");
       setTimeout(() => {
-        router.push('/');
+        router.push('/chat');
       }, 2000);
     } catch (error: any) {
       setError(error.message || "An error occurred during signup");
@@ -286,7 +286,7 @@ function AuthContent() {
             {/* Continue without account */}
             <div className="text-center">
               <Button
-                onClick={() => router.push('/')}
+                onClick={() => router.push('/chat')}
                 variant="ghost"
                 className="text-gray-600 hover:text-gray-800"
               >

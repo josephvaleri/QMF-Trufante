@@ -3,16 +3,18 @@ export type ChatTurn = { role: "user" | "assistant"; content: string };
 export async function ask(
   question: string,
   history: ChatTurn[],
-  onToken: (chunk: string) => void
+  onToken: (chunk: string) => void,
+  sessionId?: string
 ) {
   const res = await fetch("/api/ask", {
     method: "POST",
     headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({ question, history })
+    body: JSON.stringify({ question, history, session_id: sessionId })
   });
 
   if (!res.ok) {
     const errorData = await res.json().catch(() => ({ error: 'Unknown error' }));
+    console.error('Ask API Error:', { status: res.status, errorData, question });
     throw new Error(`API Error: ${res.status} - ${errorData.error || errorData.details || 'Unknown error'}`);
   }
 

@@ -131,7 +131,7 @@ export default function ProfilePage() {
   const handleLogout = async () => {
     const supabase = supaBrowser();
     await supabase.auth.signOut();
-    router.push('/');
+    router.push('/chat');
   };
 
   if (isLoading) {

@@ -5,10 +5,33 @@ import { useSearchParams, useRouter } from "next/navigation";
 import { ask, type ChatTurn } from "../(site)/useAsk";
 import { supaBrowser } from "@/lib/supabase/client";
 import { Button } from "@/components/ui/button";
-import { Card, CardContent } from "@/components/ui/card";
+import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Textarea } from "@/components/ui/textarea";
+import { Input } from "@/components/ui/input";
 import { motion, AnimatePresence } from "framer-motion";
-import { ArrowLeft, Send, User, MessageCircle, Heart, LogOut } from "lucide-react";
+import { 
+  ArrowLeft, 
+  Send, 
+  User, 
+  MessageCircle, 
+  Heart, 
+  LogOut, 
+  Plus, 
+  Edit3, 
+  Trash2,
+  MoreVertical,
+  ChevronLeft,
+  ChevronRight,
+  Shield
+} from "lucide-react";
+
+interface ChatSession {
+  id: string;
+  session_name: string;
+  created_at: string;
+  updated_at: string;
+  chat_messages: { count: number }[];
+}
 
 function ChatContent() {
   const [messages, setMessages] = useState<ChatTurn[]>([]);
@@ -16,6 +39,14 @@ function ChatContent() {
   const [isLoading, setIsLoading] = useState(false);
   const [isLoggedIn, setIsLoggedIn] = useState(false);
   const [user, setUser] = useState<any>(null);
+  const [userProfile, setUserProfile] = useState<any>(null);
+  const [isModerator, setIsModerator] = useState(false);
+  const [sessions, setSessions] = useState<ChatSession[]>([]);
+  const [currentSessionId, setCurrentSessionId] = useState<string | null>(null);
+  const [sidebarOpen, setSidebarOpen] = useState(false);
+  const [newSessionName, setNewSessionName] = useState("");
+  const [showNewSessionForm, setShowNewSessionForm] = useState(false);
+  
   const searchParams = useSearchParams();
   const router = useRouter();
   const messagesEndRef = useRef<HTMLDivElement>(null);
@@ -30,9 +61,33 @@ function ChatContent() {
       if (user) {
         setIsLoggedIn(true);
         setUser(user);
+        
+        // Get user profile and check moderator role
+        const { data: profile } = await supabase
+          .from('profiles')
+          .select('*')
+          .eq('user_id', user.id)
+          .single();
+        
+        setUserProfile(profile);
+        setIsModerator(profile?.role === 'moderator' || profile?.role === 'admin');
+        
+        await loadSessions();
+        // Auto-load the most recent session if available
+        const response = await fetch('/api/chat/sessions');
+        if (response.ok) {
+          const data = await response.json();
+          const sessions = data.sessions || [];
+          if (sessions.length > 0) {
+            // Load the most recent session
+            await loadSession(sessions[0].id);
+          }
+        }
       } else {
         setIsLoggedIn(false);
         setUser(null);
+        setUserProfile(null);
+        setIsModerator(false);
       }
     };
 
@@ -40,13 +95,40 @@ function ChatContent() {
 
     // Listen for auth changes
     const supabase = supaBrowser();
-    const { data: { subscription } } = supabase.auth.onAuthStateChange((event, session) => {
+    const { data: { subscription } } = supabase.auth.onAuthStateChange(async (event, session) => {
       if (session?.user) {
         setIsLoggedIn(true);
         setUser(session.user);
+        
+        // Get user profile and check moderator role
+        const { data: profile } = await supabase
+          .from('profiles')
+          .select('*')
+          .eq('user_id', session.user.id)
+          .single();
+        
+        setUserProfile(profile);
+        setIsModerator(profile?.role === 'moderator' || profile?.role === 'admin');
+        
+        await loadSessions();
+        // Auto-load the most recent session if available
+        const response = await fetch('/api/chat/sessions');
+        if (response.ok) {
+          const data = await response.json();
+          const sessions = data.sessions || [];
+          if (sessions.length > 0) {
+            // Load the most recent session
+            await loadSession(sessions[0].id);
+          }
+        }
       } else {
         setIsLoggedIn(false);
         setUser(null);
+        setUserProfile(null);
+        setIsModerator(false);
+        setSessions([]);
+        setCurrentSessionId(null);
+        setMessages([]);
       }
     });
 
@@ -67,8 +149,101 @@ function ChatContent() {
     messagesEndRef.current?.scrollIntoView({ behavior: "smooth" });
   }, [messages]);
 
+  const loadSessions = async () => {
+    try {
+      const response = await fetch('/api/chat/sessions');
+      if (response.ok) {
+        const data = await response.json();
+        setSessions(data.sessions || []);
+      }
+    } catch (error) {
+      console.error('Error loading sessions:', error);
+    }
+  };
+
+  const createNewSession = async () => {
+    if (!newSessionName.trim()) return;
+    
+    try {
+      const response = await fetch('/api/chat/sessions', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ session_name: newSessionName })
+      });
+      
+      if (response.ok) {
+        const data = await response.json();
+        await loadSessions();
+        setCurrentSessionId(data.session.id);
+        setMessages([]);
+        setNewSessionName("");
+        setShowNewSessionForm(false);
+      }
+    } catch (error) {
+      console.error('Error creating session:', error);
+    }
+  };
+
+  const loadSession = async (sessionId: string) => {
+    try {
+      const response = await fetch(`/api/chat/sessions/${sessionId}`);
+      if (response.ok) {
+        const data = await response.json();
+        const sessionMessages = data.session.chat_messages || [];
+        setMessages(sessionMessages.map((msg: any) => ({
+          role: msg.role,
+          content: msg.content
+        })));
+        setCurrentSessionId(sessionId);
+      }
+    } catch (error) {
+      console.error('Error loading session:', error);
+    }
+  };
+
+  const deleteSession = async (sessionId: string) => {
+    if (!confirm('Are you sure you want to delete this conversation?')) return;
+    
+    try {
+      const response = await fetch(`/api/chat/sessions/${sessionId}`, {
+        method: 'DELETE'
+      });
+      
+      if (response.ok) {
+        await loadSessions();
+        if (currentSessionId === sessionId) {
+          setCurrentSessionId(null);
+          setMessages([]);
+        }
+      }
+    } catch (error) {
+      console.error('Error deleting session:', error);
+    }
+  };
+
   async function handleSendMessage(content: string) {
     if (!content.trim() || isLoading) return;
+
+    // Create a session if one doesn't exist and user is logged in
+    let sessionId = currentSessionId;
+    if (!sessionId && isLoggedIn) {
+      try {
+        const response = await fetch('/api/chat/sessions', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ session_name: `Chat ${new Date().toLocaleDateString()}` })
+        });
+        
+        if (response.ok) {
+          const data = await response.json();
+          sessionId = data.session.id;
+          setCurrentSessionId(sessionId);
+          await loadSessions();
+        }
+      } catch (error) {
+        console.error('Error creating session:', error);
+      }
+    }
 
     const userMessage: ChatTurn = { role: "user", content };
     setMessages(prev => [...prev, userMessage]);
@@ -103,12 +278,13 @@ function ChatContent() {
           
           return newMessages;
         });
-      });
+      }, currentSessionId || undefined);
     } catch (error) {
       console.error("Chat error:", error);
+      const errorMessage = error instanceof Error ? error.message : "Unknown error occurred";
       setMessages(prev => [...prev, { 
         role: "assistant", 
-        content: "Sorry, there was an error. Please try again." 
+        content: `Sorry, there was an error: ${errorMessage}. Please try again.` 
       }]);
     } finally {
       setIsLoading(false);
@@ -122,6 +298,12 @@ function ChatContent() {
     handleSendMessage(input.trim());
     setInput("");
   }
+
+  const handleLogout = async () => {
+    const supabase = supaBrowser();
+    await supabase.auth.signOut();
+    router.push('/');
+  };
 
   return (
     <div className="h-screen w-full bg-gradient-to-br from-blue-50 via-white to-orange-50 flex flex-col">
@@ -162,8 +344,21 @@ function ChatContent() {
             {isLoggedIn && (
               <div className="flex items-center space-x-3">
                 <div className="text-orange-700 text-sm">
-                  Welcome back{user?.user_metadata?.preferred_name ? `, ${user.user_metadata.preferred_name}` : ''}!
+                  Welcome back{userProfile?.preferred_name ? `, ${userProfile.preferred_name}` : ''}!
                 </div>
+                
+                {/* Moderation Button for Moderators/Admins */}
+                {isModerator && (
+                  <Button
+                    onClick={() => router.push('/moderation')}
+                    className="bg-orange-600/90 hover:bg-orange-700/90 text-white border-0"
+                    size="sm"
+                  >
+                    <Shield className="w-4 h-4 mr-2" />
+                    Moderation
+                  </Button>
+                )}
+                
                 <Button
                   onClick={() => router.push('/profile')}
                   variant="outline"
@@ -172,6 +367,15 @@ function ChatContent() {
                 >
                   <User className="w-4 h-4 mr-2" />
                   Profile
+                </Button>
+                <Button
+                  onClick={handleLogout}
+                  variant="outline"
+                  size="sm"
+                  className="border-red-300 text-red-700 hover:bg-red-50"
+                >
+                  <LogOut className="w-4 h-4 mr-2" />
+                  Logout
                 </Button>
               </div>
             )}

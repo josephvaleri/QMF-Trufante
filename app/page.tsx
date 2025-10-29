@@ -61,6 +61,9 @@ export default function HomePage() {
           .then(({ data: profile }) => {
             setUserProfile(profile);
           });
+
+        // Redirect authenticated users to chat page
+        router.push('/chat');
       } else {
         setIsLoggedIn(false);
         setUser(null);
