@@ -154,7 +154,12 @@ function ChatContent() {
       const response = await fetch('/api/chat/sessions');
       if (response.ok) {
         const data = await response.json();
-        setSessions(data.sessions || []);
+        const loadedSessions = data.sessions || [];
+        setSessions(loadedSessions);
+        // Auto-open sidebar if there are sessions
+        if (loadedSessions.length > 0 && !sidebarOpen) {
+          setSidebarOpen(true);
+        }
       }
     } catch (error) {
       console.error('Error loading sessions:', error);
@@ -246,14 +251,20 @@ function ChatContent() {
     }
 
     const userMessage: ChatTurn = { role: "user", content };
+    
+    // Update messages with user message first
     setMessages(prev => [...prev, userMessage]);
     setIsLoading(true);
+    
+    // Get the updated messages for context (API will use DB context if session_id provided)
+    // But we still need to pass current messages for cases without session_id
+    const updatedMessages = [...messages, userMessage];
     
     // Reset the assistant message ref
     currentAssistantMessageRef.current = "";
 
     try {
-      await ask(content, messages, (chunk) => {
+      await ask(content, updatedMessages, (chunk) => {
         // Accumulate chunks in the ref
         currentAssistantMessageRef.current += chunk;
         
@@ -278,7 +289,7 @@ function ChatContent() {
           
           return newMessages;
         });
-      }, currentSessionId || undefined);
+      }, sessionId || undefined);
     } catch (error) {
       console.error("Chat error:", error);
       const errorMessage = error instanceof Error ? error.message : "Unknown error occurred";
@@ -384,8 +395,140 @@ function ChatContent() {
       </header>
 
       {/* Chat Container */}
-      <div className="flex-1 flex items-center justify-center p-4">
-        <div className="w-full max-w-4xl h-full flex flex-col">
+      <div className="flex-1 flex overflow-hidden">
+        {/* Sidebar for previous chats - only show if logged in */}
+        {isLoggedIn && (
+          <div className={`${sidebarOpen ? 'w-64' : 'w-0'} transition-all duration-300 overflow-hidden border-r border-orange-200 bg-white/90 backdrop-blur-sm flex flex-col`}>
+            <div className="p-4 border-b border-orange-200 flex items-center justify-between">
+              <h2 className="font-semibold text-orange-900">Previous Chats</h2>
+              <Button
+                onClick={() => setSidebarOpen(false)}
+                variant="ghost"
+                size="sm"
+                className="h-6 w-6 p-0"
+              >
+                <ChevronLeft className="w-4 h-4" />
+              </Button>
+            </div>
+            
+            <div className="flex-1 overflow-y-auto p-2">
+              {/* New Session Button */}
+              {!showNewSessionForm ? (
+                <Button
+                  onClick={() => setShowNewSessionForm(true)}
+                  variant="outline"
+                  className="w-full mb-2 border-orange-300 text-orange-700 hover:bg-orange-50"
+                  size="sm"
+                >
+                  <Plus className="w-4 h-4 mr-2" />
+                  New Chat
+                </Button>
+              ) : (
+                <div className="mb-2 p-2 border border-orange-200 rounded-lg bg-orange-50">
+                  <Input
+                    value={newSessionName}
+                    onChange={(e) => setNewSessionName(e.target.value)}
+                    placeholder="Chat name..."
+                    className="mb-2 text-sm"
+                    onKeyDown={(e) => {
+                      if (e.key === 'Enter') {
+                        createNewSession();
+                      } else if (e.key === 'Escape') {
+                        setShowNewSessionForm(false);
+                        setNewSessionName("");
+                      }
+                    }}
+                    autoFocus
+                  />
+                  <div className="flex space-x-2">
+                    <Button
+                      onClick={createNewSession}
+                      size="sm"
+                      className="flex-1 bg-orange-600 hover:bg-orange-700 text-xs"
+                    >
+                      Create
+                    </Button>
+                    <Button
+                      onClick={() => {
+                        setShowNewSessionForm(false);
+                        setNewSessionName("");
+                      }}
+                      variant="outline"
+                      size="sm"
+                      className="flex-1 text-xs"
+                    >
+                      Cancel
+                    </Button>
+                  </div>
+                </div>
+              )}
+              
+              {/* Sessions List */}
+              <div className="space-y-1">
+                {sessions.map((session) => (
+                  <div
+                    key={session.id}
+                    className={`p-2 rounded-lg cursor-pointer transition-colors ${
+                      currentSessionId === session.id
+                        ? 'bg-orange-100 border border-orange-300'
+                        : 'hover:bg-orange-50 border border-transparent'
+                    }`}
+                    onClick={() => loadSession(session.id)}
+                  >
+                    <div className="flex items-start justify-between">
+                      <div className="flex-1 min-w-0">
+                        <div className="font-medium text-sm text-orange-900 truncate">
+                          {session.session_name}
+                        </div>
+                        <div className="text-xs text-orange-600 mt-1">
+                          {new Date(session.updated_at).toLocaleDateString()}
+                        </div>
+                        <div className="text-xs text-orange-500 mt-1">
+                          {session.chat_messages?.[0]?.count || 0} messages
+                        </div>
+                      </div>
+                      <div className="flex items-center space-x-1 ml-2">
+                        <Button
+                          onClick={(e) => {
+                            e.stopPropagation();
+                            deleteSession(session.id);
+                          }}
+                          variant="ghost"
+                          size="sm"
+                          className="h-6 w-6 p-0 text-red-600 hover:text-red-700 hover:bg-red-50"
+                        >
+                          <Trash2 className="w-3 h-3" />
+                        </Button>
+                      </div>
+                    </div>
+                  </div>
+                ))}
+              </div>
+              
+              {sessions.length === 0 && (
+                <div className="text-center text-orange-600 text-sm mt-4">
+                  No previous chats
+                </div>
+              )}
+            </div>
+          </div>
+        )}
+        
+        {/* Chat Area */}
+        <div className="flex-1 flex items-center justify-center p-4 relative">
+          {/* Toggle Sidebar Button - only show if logged in and sidebar is closed */}
+          {isLoggedIn && !sidebarOpen && (
+            <Button
+              onClick={() => setSidebarOpen(true)}
+              variant="ghost"
+              className="absolute left-4 top-4 bg-white/90 backdrop-blur-sm border border-orange-200 hover:bg-orange-50 z-10"
+              size="sm"
+            >
+              <ChevronRight className="w-4 h-4 mr-2" />
+              Previous Chats
+            </Button>
+          )}
+          <div className="w-full max-w-4xl h-full flex flex-col">
           {/* Messages */}
           <div className="flex-1 overflow-y-auto px-4 py-6 space-y-4">
             <AnimatePresence>
@@ -521,6 +664,7 @@ function ChatContent() {
               </div>
             </form>
           </div>
+        </div>
         </div>
       </div>
     </div>

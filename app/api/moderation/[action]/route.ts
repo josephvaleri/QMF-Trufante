@@ -95,6 +95,76 @@ export async function POST(
       }, { status: 500 });
     }
 
+    // Check if retraining should be triggered (only for accepted/edited actions)
+    if (action === 'accept' || action === 'edit') {
+      try {
+        // Get retraining threshold from system config
+        const { data: thresholdConfig } = await supabase
+          .from('system_config')
+          .select('value')
+          .eq('key', 'retraining_threshold')
+          .single();
+        
+        const threshold = parseInt(thresholdConfig?.value || '20', 10);
+        
+        // Get count of accepted/edited items
+        const { count: currentCount, error: countError } = await supabase
+          .from('moderation_queue')
+          .select('*', { count: 'exact', head: true })
+          .in('status', ['accepted', 'edited']);
+        
+        if (!countError && currentCount !== null) {
+          
+          console.log(`Retraining check: ${currentCount} accepted/edited items (threshold: ${threshold})`);
+          
+          // Get last retraining count to avoid duplicate triggers
+          const { data: lastRetrainingConfig } = await supabase
+            .from('system_config')
+            .select('value')
+            .eq('key', 'last_retraining_count')
+            .single();
+          
+          const lastRetrainingCount = parseInt(lastRetrainingConfig?.value || '0', 10);
+          
+          // Check if we've crossed the threshold and haven't retrained for this batch
+          if (currentCount >= threshold && currentCount > lastRetrainingCount) {
+            console.log(`Threshold reached! Triggering model retraining with ${currentCount} items...`);
+            
+            // Update last retraining count BEFORE triggering (to prevent duplicate triggers)
+            await supabase
+              .from('system_config')
+              .upsert({
+                key: 'last_retraining_count',
+                value: currentCount.toString(),
+                updated_at: new Date().toISOString()
+              }, {
+                onConflict: 'key'
+              });
+            
+            // Trigger retraining asynchronously (don't block moderation response)
+            fetch(`${process.env.NEXT_PUBLIC_APP_URL || 'http://localhost:3000'}/api/retrain-model`, {
+              method: 'POST',
+              headers: {
+                'Content-Type': 'application/json',
+              },
+            }).then(response => {
+              if (response.ok) {
+                console.log('Model retraining triggered successfully');
+              } else {
+                console.error('Failed to trigger model retraining:', response.status);
+              }
+            }).catch(error => {
+              console.error('Error triggering model retraining:', error);
+              // Don't fail the moderation action if retraining fails
+            });
+          }
+        }
+      } catch (retrainingCheckError) {
+        // Log but don't fail moderation if retraining check fails
+        console.error('Error checking retraining threshold:', retrainingCheckError);
+      }
+    }
+
     console.log('Moderation action completed successfully');
     return NextResponse.json({ success: true });
 

@@ -58,11 +58,8 @@ export async function POST(req: NextRequest) {
     }
 
     if (!process.env.VECTOR_STORE_ID) {
-      console.error('VECTOR_STORE_ID is missing');
-      return new Response(JSON.stringify({ error: 'Vector store not configured' }), {
-        status: 500,
-        headers: { "Content-Type": "application/json" }
-      });
+      console.warn('VECTOR_STORE_ID is missing - Vector Store features will not be available');
+      // Continue without Vector Store - it's optional
     }
 
     // Initialize OpenAI client
@@ -104,6 +101,24 @@ export async function POST(req: NextRequest) {
       .single();
 
     const currentModelVersion = modelConfig?.value || 'v1.0.0';
+    
+    // Get model version details for enhanced context
+    let modelVersionDetails = null;
+    if (currentModelVersion) {
+      const { data: modelVersionData } = await supa
+        .from('model_versions')
+        .select('training_data_count, performance_metrics, model_config')
+        .eq('version', currentModelVersion)
+        .eq('status', 'active')
+        .single();
+      
+      modelVersionDetails = modelVersionData;
+      console.log('Active model version details:', {
+        version: currentModelVersion,
+        training_data_count: modelVersionData?.training_data_count,
+        vector_store_enabled: modelVersionData?.performance_metrics?.vector_store_enabled
+      });
+    }
 
     // Retrieve session context if session_id is provided and user is authenticated
     let sessionContext: Msg[] = [];
@@ -128,14 +143,22 @@ export async function POST(req: NextRequest) {
       }
     }
 
-    // Create enhanced system prompt with model version awareness
+    // Create enhanced system prompt with model version awareness and Vector Store instructions
     const basePrompt = process.env.SYSTEM_PROMPT || "You are a helpful assistant for Question My Faith.";
+    
+    const vectorStoreNote = process.env.VECTOR_STORE_ID 
+      ? `\n\nIMPORTANT: You have access to a comprehensive knowledge base through the file_search tool. When answering questions, you should search the knowledge base to provide accurate, informed responses based on the curated content available. Use the file_search tool when you need to reference specific information from the knowledge base.`
+      : '';
+    
+    const trainingDataNote = modelVersionDetails?.training_data_count 
+      ? `\n\nThis model has been trained on ${modelVersionDetails.training_data_count} curated Q&A pairs and knowledge sources.`
+      : '';
     
     const enhancedSystemPrompt = `${basePrompt}
 
-Remember: Keep responses to 2-4 sentences maximum. Use calm, succinct, empathetic voice. Listen first, ask permission before offering spiritual insight.
+Remember: Provide thoughtful, comprehensive responses that fully address the user's question. Use calm, empathetic voice. Listen first, ask permission before offering spiritual insight. Be thorough but concise - aim for complete answers (typically 3-6 sentences, but adjust based on the complexity of the question).
 
-Model Version: ${currentModelVersion}`;
+Model Version: ${currentModelVersion}${trainingDataNote}${vectorStoreNote}`;
 
     // Use session context if available, otherwise use provided history
     const contextMessages = sessionContext.length > 0 ? sessionContext : history;
@@ -146,25 +169,16 @@ Model Version: ${currentModelVersion}`;
       { role: "user", content: String(question || "").trim() }
     ];
 
-    // Generate AI response
-    console.log('Making OpenAI Chat Completions request with context...');
-
-    const stream = await openai.chat.completions.create({
-      model: "gpt-4o",
-      messages: input,
-      stream: true,
-      temperature: 0.7,
-      max_tokens: 200,
-      presence_penalty: 0.1,
-      frequency_penalty: 0.1
-    });
-
     // Get anonymous session if user is not authenticated
     let anon = cookieStore.get('qmf_anon_session')?.value ?? null;
 
     // Collect full response for DB storage
     let fullResponse = '';
     const encoder = new TextEncoder();
+    
+    // Generate AI response with Vector Store integration
+    console.log('Making OpenAI request...');
+    console.log('Vector Store ID:', process.env.VECTOR_STORE_ID ? `${process.env.VECTOR_STORE_ID.substring(0, 8)}...` : 'not configured');
     const readable = new ReadableStream({
       async start(controller) {
         try {
@@ -186,8 +200,138 @@ Model Version: ${currentModelVersion}`;
               controller.enqueue(encoder.encode(data));
               await new Promise(resolve => setTimeout(resolve, 20));
             }
+          } else if (process.env.VECTOR_STORE_ID) {
+            // Use Assistants API with Vector Store
+            try {
+              const startTime = Date.now();
+              console.log('Using Assistants API with Vector Store...');
+              
+              // Get or create assistant with Vector Store (use a single shared assistant)
+              const assistantName = `QMF Assistant`;
+              let assistantId: string | null = null;
+              
+              // Try to find existing assistant (reuse across requests for speed)
+              const assistants = await openai.beta.assistants.list({ limit: 100 });
+              const existingAssistant = assistants.data.find(a => 
+                a.name === assistantName && 
+                a.tool_resources?.file_search?.vector_store_ids?.includes(process.env.VECTOR_STORE_ID!)
+              );
+              
+              if (existingAssistant) {
+                assistantId = existingAssistant.id;
+                console.log('Using existing assistant:', assistantId);
+              } else {
+                // Create new assistant with Vector Store
+                const assistant = await openai.beta.assistants.create({
+                  name: assistantName,
+                  instructions: enhancedSystemPrompt,
+                  model: "gpt-4o",
+                  tools: [{ type: "file_search" }],
+                  tool_resources: {
+                    file_search: {
+                      vector_store_ids: [process.env.VECTOR_STORE_ID]
+                    }
+                  },
+                  temperature: 0.7,
+                  response_format: { type: "text" }
+                });
+                assistantId = assistant.id;
+                console.log('Created new assistant with Vector Store:', assistantId);
+              }
+              
+              const assistantTime = Date.now() - startTime;
+              console.log(`Assistant setup took ${assistantTime}ms`);
+              
+              // Create thread with messages (limit history to last 10 messages for speed)
+              const recentMessages = contextMessages
+                .filter(msg => msg.role !== "system") // Remove system messages (handled in assistant instructions)
+                .slice(-10) // Only last 10 messages to reduce processing time
+                .map(msg => ({
+                  role: msg.role === "assistant" ? "assistant" : "user",
+                  content: msg.content
+                }))
+                .concat([{
+                  role: "user" as const,
+                  content: String(question || "").trim()
+                }]);
+              
+              const threadStartTime = Date.now();
+              const thread = await openai.beta.threads.create({
+                messages: recentMessages
+              });
+              console.log(`Thread creation took ${Date.now() - threadStartTime}ms`);
+              
+              // Run assistant with streaming
+              const runStartTime = Date.now();
+              const runStream = openai.beta.threads.runs.createAndStream(thread.id, {
+                assistant_id: assistantId,
+              });
+              
+              // Stream the assistant response
+              let assistantResponse = '';
+              let firstChunk = true;
+              for await (const event of runStream) {
+                if (event.event === 'thread.message.delta') {
+                  const content = (event as any).data?.delta?.content?.[0]?.text?.value;
+                  if (content) {
+                    if (firstChunk) {
+                      console.log(`First response chunk after ${Date.now() - runStartTime}ms`);
+                      firstChunk = false;
+                    }
+                    assistantResponse += content;
+                    const data = `data: ${JSON.stringify({
+                      choices: [{
+                        delta: { content: content }
+                      }]
+                    })}\n\n`;
+                    controller.enqueue(encoder.encode(data));
+                  }
+                }
+              }
+              
+              fullResponse = assistantResponse;
+              console.log(`✅ Assistant response complete (total: ${Date.now() - startTime}ms, response length: ${assistantResponse.length} chars)`);
+              
+            } catch (assistantError: any) {
+              console.error('Error using Assistants API, falling back to Chat Completions:', assistantError);
+              // Fall through to Chat Completions below
+              
+              // Fallback to Chat Completions
+              const stream = await openai.chat.completions.create({
+                model: "gpt-4o",
+                messages: input,
+                stream: true,
+                temperature: 0.7,
+                max_tokens: 500,
+                presence_penalty: 0.1,
+                frequency_penalty: 0.1
+              });
+              
+              for await (const chunk of stream) {
+                if (chunk.choices[0]?.delta?.content) {
+                  const content = chunk.choices[0].delta.content;
+                  fullResponse += content;
+                  const data = `data: ${JSON.stringify({
+                    choices: [{
+                      delta: { content: content }
+                    }]
+                  })}\n\n`;
+                  controller.enqueue(encoder.encode(data));
+                }
+              }
+            }
           } else {
-            // Normal streaming from OpenAI
+            // Normal streaming from OpenAI Chat Completions (no Vector Store)
+            const stream = await openai.chat.completions.create({
+              model: "gpt-4o",
+              messages: input,
+              stream: true,
+              temperature: 0.7,
+              max_tokens: 500,
+              presence_penalty: 0.1,
+              frequency_penalty: 0.1
+            });
+            
             for await (const chunk of stream) {
               if (chunk.choices[0]?.delta?.content) {
                 const content = chunk.choices[0].delta.content;
