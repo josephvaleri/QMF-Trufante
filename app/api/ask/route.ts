@@ -221,13 +221,15 @@ Model Version: ${currentModelVersion}${trainingDataNote}${vectorStoreNote}`;
               if (cachedAssistant?.value) {
                 assistantId = cachedAssistant.value;
                 // Quick verify it exists (skip if it's clearly valid format)
-                try {
-                  await openai.beta.assistants.retrieve(assistantId);
-                  console.log('Using cached assistant ID:', assistantId);
-                } catch (e) {
-                  // Assistant doesn't exist, clear cache and find/create new one
-                  assistantId = null;
-                  await supa.from('system_config').delete().eq('key', 'assistant_id');
+                if (assistantId) {
+                  try {
+                    await openai.beta.assistants.retrieve(assistantId);
+                    console.log('Using cached assistant ID:', assistantId);
+                  } catch (e) {
+                    // Assistant doesn't exist, clear cache and find/create new one
+                    assistantId = null;
+                    await supa.from('system_config').delete().eq('key', 'assistant_id');
+                  }
                 }
               }
               
