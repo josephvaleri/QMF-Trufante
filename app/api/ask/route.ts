@@ -247,13 +247,13 @@ Model Version: ${currentModelVersion}${trainingDataNote}${vectorStoreNote}`;
                 .filter(msg => msg.role !== "system") // Remove system messages (handled in assistant instructions)
                 .slice(-10) // Only last 10 messages to reduce processing time
                 .map(msg => ({
-                  role: msg.role === "assistant" ? "assistant" : "user",
+                  role: (msg.role === "assistant" ? "assistant" : "user") as "user" | "assistant",
                   content: msg.content
                 }))
                 .concat([{
                   role: "user" as const,
                   content: String(question || "").trim()
-                }]);
+                }]) as Array<{ role: "user" | "assistant"; content: string }>;
               
               const threadStartTime = Date.now();
               const thread = await openai.beta.threads.create({
