@@ -201,26 +201,57 @@ Model Version: ${currentModelVersion}${trainingDataNote}${vectorStoreNote}`;
               await new Promise(resolve => setTimeout(resolve, 20));
             }
           } else if (process.env.VECTOR_STORE_ID) {
-            // Use Assistants API with Vector Store
+            // Use Assistants API with Vector Store (required for Vector Store search)
+            // Optimized for speed with caching and reduced history
             try {
               const startTime = Date.now();
               console.log('Using Assistants API with Vector Store...');
               
-              // Get or create assistant with Vector Store (use a single shared assistant)
+              // Get or create assistant with Vector Store (cache in database for speed)
               const assistantName = `QMF Assistant`;
               let assistantId: string | null = null;
               
-              // Try to find existing assistant (reuse across requests for speed)
-              const assistants = await openai.beta.assistants.list({ limit: 100 });
-              const existingAssistant = assistants.data.find(a => 
-                a.name === assistantName && 
-                a.tool_resources?.file_search?.vector_store_ids?.includes(process.env.VECTOR_STORE_ID!)
-              );
+              // Try to get cached assistant ID from database first (fastest)
+              const { data: cachedAssistant } = await supa
+                .from('system_config')
+                .select('value')
+                .eq('key', 'assistant_id')
+                .single();
               
-              if (existingAssistant) {
-                assistantId = existingAssistant.id;
-                console.log('Using existing assistant:', assistantId);
-              } else {
+              if (cachedAssistant?.value) {
+                assistantId = cachedAssistant.value;
+                // Quick verify it exists (skip if it's clearly valid format)
+                try {
+                  await openai.beta.assistants.retrieve(assistantId);
+                  console.log('Using cached assistant ID:', assistantId);
+                } catch (e) {
+                  // Assistant doesn't exist, clear cache and find/create new one
+                  assistantId = null;
+                  await supa.from('system_config').delete().eq('key', 'assistant_id');
+                }
+              }
+              
+              if (!assistantId) {
+                // Try to find existing assistant (limit search to 10 for speed)
+                const assistants = await openai.beta.assistants.list({ limit: 10 });
+                const existingAssistant = assistants.data.find(a => 
+                  a.name === assistantName && 
+                  a.tool_resources?.file_search?.vector_store_ids?.includes(process.env.VECTOR_STORE_ID!)
+                );
+                
+                if (existingAssistant) {
+                  assistantId = existingAssistant.id;
+                  console.log('Found existing assistant:', assistantId);
+                  // Cache it for next time
+                  await supa.from('system_config').upsert({
+                    key: 'assistant_id',
+                    value: assistantId,
+                    updated_at: new Date().toISOString()
+                  }, { onConflict: 'key' });
+                }
+              }
+              
+              if (!assistantId) {
                 // Create new assistant with Vector Store
                 const assistant = await openai.beta.assistants.create({
                   name: assistantName,
@@ -237,15 +268,21 @@ Model Version: ${currentModelVersion}${trainingDataNote}${vectorStoreNote}`;
                 });
                 assistantId = assistant.id;
                 console.log('Created new assistant with Vector Store:', assistantId);
+                // Cache it for next time
+                await supa.from('system_config').upsert({
+                  key: 'assistant_id',
+                  value: assistantId,
+                  updated_at: new Date().toISOString()
+                }, { onConflict: 'key' });
               }
               
               const assistantTime = Date.now() - startTime;
               console.log(`Assistant setup took ${assistantTime}ms`);
               
-              // Create thread with messages (limit history to last 10 messages for speed)
+              // Create thread with messages (limit history to last 3 messages for maximum speed)
               const recentMessages = contextMessages
                 .filter(msg => msg.role !== "system") // Remove system messages (handled in assistant instructions)
-                .slice(-10) // Only last 10 messages to reduce processing time
+                .slice(-3) // Only last 3 messages to maximize speed
                 .map(msg => ({
                   role: (msg.role === "assistant" ? "assistant" : "user") as "user" | "assistant",
                   content: msg.content
@@ -261,15 +298,16 @@ Model Version: ${currentModelVersion}${trainingDataNote}${vectorStoreNote}`;
               });
               console.log(`Thread creation took ${Date.now() - threadStartTime}ms`);
               
-              // Run assistant with streaming
+              // Run assistant with streaming (optimized for speed)
               const runStartTime = Date.now();
               const runStream = openai.beta.threads.runs.createAndStream(thread.id, {
                 assistant_id: assistantId,
               });
               
-              // Stream the assistant response
+              // Stream the assistant response immediately (no timeout - let it complete)
               let assistantResponse = '';
               let firstChunk = true;
+              
               for await (const event of runStream) {
                 if (event.event === 'thread.message.delta') {
                   const content = (event as any).data?.delta?.content?.[0]?.text?.value;
@@ -279,6 +317,7 @@ Model Version: ${currentModelVersion}${trainingDataNote}${vectorStoreNote}`;
                       firstChunk = false;
                     }
                     assistantResponse += content;
+                    // Stream immediately to user
                     const data = `data: ${JSON.stringify({
                       choices: [{
                         delta: { content: content }
