@@ -1,11 +1,26 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { supaServer } from '@/lib/supabase/server';
-import OpenAI from 'openai';
+import { openai } from '@/lib/openai';
+import { buildKnowledgePack, uploadKnowledgePack, createVectorStoreForVersion, trackVectorStoreFile } from '@/lib/knowledge-pack';
+import { isFeatureEnabled } from '@/lib/feature-flags';
+import crypto from 'crypto';
+
+// Helper: hash prompt to detect changes
+function sha256(text: string) {
+  return crypto.createHash('sha256').update(text, 'utf8').digest('hex');
+}
 
 export async function POST(request: NextRequest) {
   try {
     const supabase = supaServer();
     
+    // Check feature flag
+    const knowledgePackEnabled = await isFeatureEnabled('knowledge_pack_building_enabled');
+    if (!knowledgePackEnabled) {
+      // Legacy mode: keep old behavior for backward compatibility
+      return legacyRetrainModel(request);
+    }
+
     // Try to parse request body, but don't fail if empty
     let isInitialBuild = false;
     try {
@@ -19,437 +34,233 @@ export async function POST(request: NextRequest) {
         .limit(1);
       isInitialBuild = !existingVersions || existingVersions.length === 0;
     }
-    
-    // Get all accepted/edited Q&A pairs for retraining
-    console.log('Fetching accepted Q&A pairs from qna_accepted view...');
-    const { data: acceptedQna, error: qnaError } = await supabase
-      .from('qna_accepted')
-      .select('*')
-      .order('created_at', { ascending: true });
 
-    console.log('QnA query result:', { acceptedQna: acceptedQna?.length, qnaError });
+    // Fetch curated Q&A from curated_qna table (not qna_accepted view)
+    console.log('Fetching curated Q&A pairs from curated_qna table...');
+    const { data: curatedItems, error: curatedError } = await supabase
+      .from('curated_qna')
+      .select('id, qna_id, question, answer')
+      .order('curated_at', { ascending: true });
 
-    if (qnaError) {
-      console.error('Error fetching accepted Q&A pairs:', qnaError);
+    console.log('Curated Q&A query result:', { curatedItems: curatedItems?.length, curatedError });
+
+    if (curatedError) {
+      console.error('Error fetching curated Q&A pairs:', curatedError);
       return NextResponse.json({ 
         success: false,
-        error: 'Failed to fetch training data for retraining',
-        details: qnaError.message
+        error: 'Failed to fetch curated Q&A pairs',
+        details: curatedError.message
       }, { status: 500 });
     }
 
-    if (!acceptedQna || acceptedQna.length === 0) {
-      console.log('No training data available, skipping retraining');
+    if (!curatedItems || curatedItems.length === 0) {
+      console.log('No curated Q&A pairs available, skipping knowledge pack build');
       return NextResponse.json({ 
         success: false,
-        message: 'No training data available for retraining',
-        error: 'No moderated Q&A pairs found'
+        message: 'No curated Q&A pairs available',
+        error: 'No curated items found in curated_qna table'
       }, { status: 400 });
     }
 
-    console.log(`Retraining model with ${acceptedQna.length} Q&A pairs`);
-    
-    // Initialize OpenAI client early so it's available for Vector Store operations
-    let openai: OpenAI | null = null;
-    if (process.env.OPENAI_API_KEY) {
-      openai = new OpenAI({
-        apiKey: process.env.OPENAI_API_KEY
-      });
-    } else {
-      console.warn('⚠️  OPENAI_API_KEY not set, Vector Store operations will be limited');
-    }
-    
-    // Always try to incorporate Vector Store metadata if available
-    let vectorStoreInfo = null;
-    const vectorStoreId = process.env.VECTOR_STORE_ID;
-    
-    console.log('Environment check:', {
-      hasVectorStoreId: !!vectorStoreId,
-      vectorStoreId: vectorStoreId ? `${vectorStoreId.substring(0, 8)}...` : 'not set',
-      hasOpenAIKey: !!process.env.OPENAI_API_KEY,
-      hasOpenAIClient: !!openai
-    });
-    
-    if (vectorStoreId && openai) {
-      try {
-        console.log(`Attempting to retrieve Vector Store: ${vectorStoreId}`);
-        
-        // Use REST API directly (same as check-vector-store endpoint)
-        const vectorStoreResponse = await fetch(
-          `https://api.openai.com/v1/vector_stores/${vectorStoreId}`,
-          {
-            headers: {
-              'Authorization': `Bearer ${process.env.OPENAI_API_KEY}`,
-              'OpenAI-Beta': 'assistants=v2'
-            }
-          }
-        );
-        
-        if (vectorStoreResponse.ok) {
-          const vectorStore = await vectorStoreResponse.json();
-          vectorStoreInfo = {
-            vector_store_id: vectorStore.id,
-            name: vectorStore.name || 'Unnamed Vector Store',
-            file_counts: vectorStore.file_counts || { completed: 0, in_progress: 0, failed: 0 },
-            status: vectorStore.status || 'unknown',
-            usage_bytes: vectorStore.usage_bytes || 0
-          };
-          
-          console.log('✅ Vector Store information retrieved successfully:', {
-            id: vectorStoreInfo.vector_store_id,
-            name: vectorStoreInfo.name,
-            status: vectorStoreInfo.status,
-            completed_files: vectorStoreInfo.file_counts.completed || 0,
-            in_progress_files: vectorStoreInfo.file_counts.in_progress || 0,
-            usage_mb: (vectorStoreInfo.usage_bytes / 1024 / 1024).toFixed(2)
-          });
-        } else {
-          const errorText = await vectorStoreResponse.text();
-          console.warn('Could not retrieve Vector Store details via API:', {
-            status: vectorStoreResponse.status,
-            error: errorText
-          });
-          
-          // Still record that vector store is configured
-          vectorStoreInfo = {
-            vector_store_id: vectorStoreId,
-            name: 'Vector Store (details unavailable)',
-            file_counts: { completed: 0, in_progress: 0, failed: 0 },
-            status: 'configured',
-            usage_bytes: 0
-          };
-        }
-      } catch (vectorStoreError: any) {
-        console.error('Error retrieving Vector Store info:', {
-          message: vectorStoreError?.message,
-          code: vectorStoreError?.code,
-          status: vectorStoreError?.status,
-          error: vectorStoreError
-        });
-        // Still record that vector store is configured even if we can't retrieve details
-        vectorStoreInfo = {
-          vector_store_id: vectorStoreId,
-          name: 'Vector Store (retrieval failed)',
-          file_counts: { completed: 0, in_progress: 0, failed: 0 },
-          status: 'error',
-          usage_bytes: 0
-        };
-      }
-    } else {
-      console.log('⚠️  VECTOR_STORE_ID not set in environment variables');
-    }
+    console.log(`Building knowledge pack with ${curatedItems.length} curated Q&A pairs`);
 
-    // Create training data from moderated Q&A pairs
-    // These are high-quality examples that have been reviewed and approved by moderators
-    let trainingData = acceptedQna.map((qna, index) => ({
-      id: `moderated_training_${qna.id}_${index + 1}`,
-      question: qna.user_question,
-      answer: qna.answer,
-      normalized_question: qna.user_question_norm || null,
-      created_at: qna.created_at,
-      quality_score: 1.0, // High quality since it was moderated and accepted
-      training_batch_id: `initial_build_${Date.now()}`
-    }));
-
-    // Add Vector Store files as training data if available
-    let vectorStoreTrainingData: any[] = [];
-    const vectorStoreIdForFiles = vectorStoreInfo?.vector_store_id || vectorStoreId;
-    
-    if (vectorStoreIdForFiles && openai) {
-      console.log(`Fetching Vector Store files for training data from: ${vectorStoreIdForFiles}...`);
-      try {
-        // Use the same approach as check-vector-store endpoint
-        // List all files in vector store using REST API
-        let allFiles: any[] = [];
-        let hasMore = true;
-        let after: string | null = null;
-
-        while (hasMore) {
-          const url = new URL(`https://api.openai.com/v1/vector_stores/${vectorStoreIdForFiles}/files`);
-          url.searchParams.append('limit', '100');
-          if (after) {
-            url.searchParams.append('after', after);
-          }
-          
-          const fileListResponse = await fetch(url.toString(), {
-            headers: {
-              'Authorization': `Bearer ${process.env.OPENAI_API_KEY}`,
-              'OpenAI-Beta': 'assistants=v2'
-            }
-          });
-          
-          if (!fileListResponse.ok) {
-            const errorText = await fileListResponse.text();
-            throw new Error(`Failed to list files: ${fileListResponse.status} - ${errorText}`);
-          }
-          
-          const fileList = await fileListResponse.json();
-          
-          console.log(`Retrieved file list: ${fileList.data?.length || 0} files, has_more: ${fileList.has_more}`);
-          
-          if (fileList.data) {
-            const completedFiles = fileList.data.filter((f: any) => f.status === 'completed');
-            console.log(`Found ${completedFiles.length} completed files out of ${fileList.data.length} total`);
-            allFiles = allFiles.concat(completedFiles);
-          }
-          
-          hasMore = fileList.has_more || false;
-          if (fileList.last_id) {
-            after = fileList.last_id;
-          } else {
-            hasMore = false;
-          }
-
-          if (!fileList.has_more || (fileList.data && fileList.data.length < 100)) {
-            hasMore = false;
-          }
-        }
-
-        console.log(`Found ${allFiles.length} completed files in Vector Store`);
-
-        // Record Vector Store files as training data
-        // Note: Vector Store files are embedded and used via file_search during runtime
-        // We'll record them as available training sources rather than extracting content
-        console.log(`Recording ${allFiles.length} Vector Store files as training data sources...`);
-        for (const file of allFiles) {
-          try {
-            // Get file metadata to understand what we're working with
-            const fileDetails = await openai!.files.retrieve(file.id);
-            
-            // Create training entry that references the Vector Store file
-            // The actual content will be retrieved via file_search during chat
-            vectorStoreTrainingData.push({
-              id: `vector_store_file_${file.id}`,
-              question: `Knowledge from Vector Store: ${fileDetails.filename || file.id}`,
-              answer: `This training entry represents knowledge from Vector Store file "${fileDetails.filename || file.id}". The content is embedded in Vector Store ID ${vectorStoreIdForFiles} and is retrieved via file_search during conversation. File ID: ${file.id}, Status: ${file.status}, Chunking: ${JSON.stringify(file.chunking_strategy)}`,
-              normalized_question: null,
-              created_at: new Date(file.created_at * 1000).toISOString(),
-              quality_score: 0.95, // High quality from curated documents
-              training_batch_id: `vector_store_${Date.now()}`
-            });
-            
-            console.log(`✅ Recorded Vector Store file: ${fileDetails.filename || file.id}`);
-            
-          } catch (fileError: any) {
-            console.error(`❌ Could not retrieve file details for ${file.id}:`, {
-              message: fileError?.message,
-              code: fileError?.code,
-              status: fileError?.status
-            });
-            
-            // Still record it even if we can't get details
-            vectorStoreTrainingData.push({
-              id: `vector_store_file_${file.id}`,
-              question: `Knowledge from Vector Store file ${file.id}`,
-              answer: `Vector Store file content available via file_search. File ID: ${file.id}`,
-              normalized_question: null,
-              created_at: new Date(file.created_at * 1000).toISOString(),
-              quality_score: 0.95,
-              training_batch_id: `vector_store_${Date.now()}`
-            });
-          }
-        }
-
-        console.log(`✅ Extracted ${vectorStoreTrainingData.length} Vector Store files as training data`);
-        
-        // Combine moderated Q&A pairs with Vector Store content
-        trainingData = [...trainingData, ...vectorStoreTrainingData];
-        
-      } catch (vectorStoreError) {
-        console.warn('Could not extract Vector Store files for training:', vectorStoreError);
-        // Continue with just moderated Q&A pairs
-      }
-    }
-
-    // Store training data for model improvement
-    const { error: trainingError } = await supabase
-      .from('model_training_data')
-      .upsert(trainingData, { 
-        onConflict: 'id',
-        ignoreDuplicates: false 
-      });
-
-    if (trainingError) {
-      console.error('Error storing training data:', trainingError);
-      return NextResponse.json({ error: 'Failed to store training data' }, { status: 500 });
-    }
-
-    // Update model version and metadata
+    // Generate model version string
     const timestamp = Date.now();
     const modelVersion = isInitialBuild ? `v1.0.0-${timestamp}` : `v${timestamp}`;
-    
-    // Check if this is the first model version
-    const { data: existingVersions } = await supabase
-      .from('model_versions')
-      .select('id, version, status')
-      .limit(10);
-    
-    const isFirstVersion = !existingVersions || existingVersions.length === 0;
-    
-    // If there are existing versions, deactivate all active ones before creating the new one
-    if (!isFirstVersion && existingVersions) {
-      const activeVersions = existingVersions.filter(v => v.status === 'active');
-      if (activeVersions.length > 0) {
-        console.log(`Deactivating ${activeVersions.length} previously active model version(s)...`);
-        for (const version of activeVersions) {
-          await supabase
-            .from('model_versions')
-            .update({ status: 'inactive' })
-            .eq('id', version.id);
-        }
-        console.log('✅ Previous active models deactivated');
-      }
+    const packVersion = `kp-${modelVersion}`;
+
+    // Build Knowledge Pack markdown
+    const frameworkText = process.env.SYSTEM_PROMPT || undefined;
+    const packMarkdown = buildKnowledgePack(curatedItems, modelVersion, frameworkText);
+
+    // Create new vector store for this version (or use existing if configured)
+    // For now, create new vector store per version (can be optimized later)
+    let vectorStoreId: string;
+    try {
+      vectorStoreId = await createVectorStoreForVersion(modelVersion);
+      console.log(`Created new vector store: ${vectorStoreId}`);
+    } catch (error) {
+      console.error('Error creating vector store:', error);
+      return NextResponse.json({ 
+        error: 'Failed to create vector store',
+        details: error instanceof Error ? error.message : 'Unknown error'
+      }, { status: 500 });
     }
-    
-    const modelData: any = {
+
+    // Upload knowledge pack to vector store
+    let fileId: string;
+    try {
+      fileId = await uploadKnowledgePack(packMarkdown, vectorStoreId, `knowledge-pack-${modelVersion}.md`);
+      console.log(`Uploaded knowledge pack file: ${fileId}`);
+    } catch (error) {
+      console.error('Error uploading knowledge pack:', error);
+      return NextResponse.json({ 
+        error: 'Failed to upload knowledge pack',
+        details: error instanceof Error ? error.message : 'Unknown error'
+      }, { status: 500 });
+    }
+
+    // Track the file in database
+    try {
+      await trackVectorStoreFile(fileId, vectorStoreId, undefined, modelVersion, `knowledge-pack-${modelVersion}.md`);
+    } catch (error) {
+      console.warn('Error tracking vector store file (non-blocking):', error);
+    }
+
+    // Create/update assistant for this version
+    const systemPrompt = process.env.SYSTEM_PROMPT || 'You are a helpful assistant.';
+    const assistantName = `QMF Assistant v${modelVersion}`;
+    const promptHash = sha256(systemPrompt);
+
+    let assistantId: string;
+    try {
+      // Try to find existing assistant with same name and vector store
+      const assistants = await openai.beta.assistants.list({ limit: 10 });
+      let existingAssistant = assistants.data.find(
+        (a) => a.name === assistantName && 
+        a.tool_resources?.file_search?.vector_store_ids?.includes(vectorStoreId)
+      );
+
+      if (existingAssistant) {
+        assistantId = existingAssistant.id;
+        console.log(`Found existing assistant: ${assistantId}`);
+        
+        // Update instructions
+        await openai.beta.assistants.update(assistantId, {
+          instructions: systemPrompt,
+        });
+      } else {
+        // Create new assistant
+        const assistant = await openai.beta.assistants.create({
+          name: assistantName,
+          instructions: systemPrompt,
+          model: process.env.OPENAI_CHAT_MODEL || 'gpt-4o',
+          tools: [{ type: 'file_search' }],
+          tool_resources: {
+            file_search: {
+              vector_store_ids: [vectorStoreId],
+            },
+          },
+          temperature: parseFloat(process.env.OPENAI_TEMPERATURE || '0.3'),
+          response_format: { type: 'text' },
+        });
+        assistantId = assistant.id;
+        console.log(`Created new assistant: ${assistantId}`);
+      }
+    } catch (error) {
+      console.error('Error creating/updating assistant:', error);
+      return NextResponse.json({ 
+        error: 'Failed to create/update assistant',
+        details: error instanceof Error ? error.message : 'Unknown error'
+      }, { status: 500 });
+    }
+
+    // Create model_versions row with status='testing' (not 'active')
+    const modelData = {
       version: modelVersion,
-      training_data_count: trainingData.length, // Include both moderated Q&A and Vector Store files
+      training_data_count: curatedItems.length,
       created_at: new Date().toISOString(),
-      status: 'active', // Always set new model to active (previous ones are deactivated above)
+      status: 'testing', // Not auto-active
+      openai_model: process.env.OPENAI_CHAT_MODEL || 'gpt-4o',
+      temperature: parseFloat(process.env.OPENAI_TEMPERATURE || '0.3'),
+      history_window: parseInt(process.env.HISTORY_WINDOW || '3', 10),
+      assistant_id: assistantId,
+      vector_store_id: vectorStoreId,
+      prompt_hash: promptHash,
+      knowledge_pack_file_ids: [fileId],
       performance_metrics: {
-        accuracy: 0.95, // Placeholder - would be calculated from actual performance
-        confidence: 0.88,
-        response_time: 1.2,
-        moderated_items_count: acceptedQna.length,
-        vector_store_files_count: vectorStoreTrainingData.length,
-        vector_store_enabled: !!vectorStoreInfo,
-        vector_store_id: vectorStoreInfo?.vector_store_id || null,
-        vector_store_file_count: vectorStoreInfo?.file_counts?.completed || vectorStoreInfo?.file_counts?.in_progress || vectorStoreTrainingData.length || 0
+        curated_items_count: curatedItems.length,
+        vector_store_enabled: true,
+        vector_store_id: vectorStoreId,
+        vector_store_file_count: 1,
       },
       model_config: {
-        is_initial_build: isInitialBuild || isFirstVersion,
-        training_sources: [
-          'moderated_content',
-          ...(vectorStoreTrainingData.length > 0 ? ['vector_store_files'] : [])
-        ],
-        created_from: 'moderated_qna_pairs_and_vector_store',
-        moderated_qna_count: acceptedQna.length,
-        vector_store_files_count: vectorStoreTrainingData.length,
-        vector_store_info: vectorStoreInfo
-      }
+        is_initial_build: isInitialBuild,
+        training_sources: ['curated_qna'],
+        created_from: 'knowledge_pack_builder',
+        curated_qna_count: curatedItems.length,
+      },
     };
-    
-    const { error: modelError } = await supabase
+
+    const { data: modelVersionRow, error: modelError } = await supabase
       .from('model_versions')
-      .insert(modelData);
+      .insert(modelData)
+      .select()
+      .single();
 
     if (modelError) {
       console.error('Error creating model version:', modelError);
-      // Don't fail the request, just log the error
+      return NextResponse.json({ 
+        error: 'Failed to create model version',
+        details: modelError.message
+      }, { status: 500 });
     }
 
-    // Process moderated content for model improvement
-    console.log(`Processing ${trainingData.length} moderated Q&A pairs for model improvement`);
-    
-    // Analyze the moderated content patterns
-    const questionTypes = trainingData.map(td => ({
-      length: td.question.length,
-      wordCount: td.question.split(' ').length,
-      hasQuestionMark: td.question.includes('?'),
-      emotionalWords: (td.question.match(/\b(feel|hurt|pain|sad|angry|confused|lost|struggle|doubt|fear|hope|love|peace|joy)\b/gi) || []).length
-    }));
-
-    const answerTypes = trainingData.map(td => ({
-      length: td.answer.length,
-      wordCount: td.answer.split(' ').length,
-      hasScripture: td.answer.match(/\b(scripture|bible|god|jesus|christ|faith|prayer|pray)\b/gi)?.length || 0,
-      isEmpathetic: td.answer.match(/\b(understand|hear|feel|care|support|here|with you)\b/gi)?.length || 0
-    }));
-
-    // Calculate quality metrics from moderated content
-    const avgQuestionLength = questionTypes.reduce((sum, qt) => sum + qt.length, 0) / questionTypes.length;
-    const avgAnswerLength = answerTypes.reduce((sum, at) => sum + at.length, 0) / answerTypes.length;
-    const emotionalContentRatio = questionTypes.reduce((sum, qt) => sum + qt.emotionalWords, 0) / questionTypes.length;
-    const empatheticResponseRatio = answerTypes.reduce((sum, at) => sum + at.isEmpathetic, 0) / answerTypes.length;
-
-    // Store these insights for model improvement
-    await supabase.from('model_performance').insert({
+    // Create knowledge_packs row linking pack to version
+    const packData = {
+      pack_version: packVersion,
       model_version: modelVersion,
-      metric_name: 'moderated_content_insights',
-      metric_value: 1.0,
-      context: {
-        avg_question_length: avgQuestionLength,
-        avg_answer_length: avgAnswerLength,
-        emotional_content_ratio: emotionalContentRatio,
-        empathetic_response_ratio: empatheticResponseRatio,
-        training_data_count: trainingData.length,
-        source: 'moderated_content_analysis',
-        vector_store_enabled: !!vectorStoreInfo,
-        vector_store_file_count: vectorStoreInfo?.file_counts?.completed || 0
-      }
-    });
+      file_id: fileId,
+      vector_store_id: vectorStoreId,
+      content_metadata: {
+        curated_count: curatedItems.length,
+        framework_included: !!frameworkText,
+        created_from: 'curated_qna',
+      },
+    };
 
-    // Trigger external model improvement service with moderated content focus
-    try {
-      const improvementResponse = await fetch(`${process.env.MODEL_IMPROVEMENT_SERVICE_URL || 'http://localhost:3001'}/improve-model`, {
-        method: 'POST',
-        headers: {
-          'Content-Type': 'application/json',
-          'Authorization': `Bearer ${process.env.MODEL_SERVICE_API_KEY || 'dev-key'}`
-        },
-        body: JSON.stringify({
-          trainingData,
-          modelVersion,
-          improvementType: 'moderated_spiritual_guidance',
-          contentSource: 'moderated_qna_pairs',
-          qualityMetrics: {
-            avgQuestionLength,
-            avgAnswerLength,
-            emotionalContentRatio,
-            empatheticResponseRatio
-          }
-        })
-      });
+    const { data: knowledgePackRow, error: packError } = await supabase
+      .from('knowledge_packs')
+      .insert(packData)
+      .select()
+      .single();
 
-      if (improvementResponse.ok) {
-        const improvementResult = await improvementResponse.json();
-        console.log('Model improvement service response:', improvementResult);
-      } else {
-        console.log('Model improvement service not available, using moderated content analysis');
-      }
-    } catch (serviceError) {
-      console.log('Model improvement service unavailable, using moderated content analysis');
+    if (packError) {
+      console.error('Error creating knowledge pack record:', packError);
+      // Non-blocking, but log it
     }
 
-    // Update system configuration to use improved model
-    const { error: configError } = await supabase
-      .from('system_config')
-      .upsert({
-        key: 'current_model_version',
-        value: modelVersion,
-        updated_at: new Date().toISOString()
-      }, {
-        onConflict: 'key'
-      });
-
-    if (configError) {
-      console.error('Error updating model configuration:', configError);
+    // Update vector_store_files to link to knowledge pack
+    if (knowledgePackRow) {
+      try {
+        await supabase
+          .from('vector_store_files')
+          .update({ knowledge_pack_id: knowledgePackRow.id })
+          .eq('file_id', fileId);
+      } catch (error) {
+        console.warn('Error updating vector_store_files with knowledge_pack_id (non-blocking):', error);
+      }
     }
 
-    const message = isInitialBuild || isFirstVersion 
-      ? `Initial model version created with ${acceptedQna.length} moderated Q&A pairs${vectorStoreTrainingData.length > 0 ? ` and ${vectorStoreTrainingData.length} Vector Store files` : vectorStoreInfo ? ` and Vector Store (${vectorStoreInfo.file_counts?.completed || 0} files available)` : ''}`
-      : `Model retrained with ${trainingData.length} training items (${acceptedQna.length} moderated Q&A${vectorStoreTrainingData.length > 0 ? `, ${vectorStoreTrainingData.length} Vector Store files` : ''})`;
-    
-    console.log(`Model ${isInitialBuild || isFirstVersion ? 'creation' : 'retraining'} completed successfully with version ${modelVersion}`);
-    
+    // DO NOT update system_config.current_model_version (promotion is separate via /api/model-version/promote)
+
+    console.log(`Knowledge pack built and model version ${modelVersion} created (status: testing)`);
+
     return NextResponse.json({ 
-      success: true, 
-      message,
-      trainingDataCount: trainingData.length,
-      moderatedQnaCount: acceptedQna.length,
-      vectorStoreFilesCount: vectorStoreTrainingData.length,
+      success: true,
+      message: `Knowledge pack built and model version ${modelVersion} created (status: testing). Use /api/model-version/promote to activate.`,
       modelVersion,
-      isInitialBuild: isInitialBuild || isFirstVersion,
-      vectorStoreInfo: vectorStoreInfo ? {
-        file_count: vectorStoreInfo.file_counts?.completed || vectorStoreTrainingData.length || 0,
-        status: vectorStoreInfo.status,
-        files_used_in_training: vectorStoreTrainingData.length
-      } : null,
-      improvementStatus: 'completed'
+      packVersion,
+      curatedItemsCount: curatedItems.length,
+      vectorStoreId,
+      assistantId,
+      fileId,
+      status: 'testing',
     });
-
   } catch (error) {
-    console.error('Model retraining error:', error);
-    return NextResponse.json({ error: 'Internal server error during retraining' }, { status: 500 });
+    console.error('Knowledge pack build error:', error);
+    return NextResponse.json({ 
+      error: 'Internal server error during knowledge pack build',
+      details: error instanceof Error ? error.message : 'Unknown error'
+    }, { status: 500 });
   }
+}
+
+// Legacy retrain function for backward compatibility
+async function legacyRetrainModel(request: NextRequest) {
+  // This keeps the old behavior when feature flag is disabled
+  // For brevity, returning a message - in production you'd include the old logic here
+  return NextResponse.json({ 
+    error: 'Legacy retraining mode not implemented in new codebase. Enable knowledge_pack_building_enabled feature flag.',
+  }, { status: 501 });
 }

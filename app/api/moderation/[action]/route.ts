@@ -1,6 +1,10 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { createServerClient } from '@supabase/ssr';
 import { cookies } from 'next/headers';
+import { upsertCuratedQnA } from '@/lib/curated-qna';
+import { isFeatureEnabled } from '@/lib/feature-flags';
+import { trackVectorStoreFile } from '@/lib/knowledge-pack';
+import { getActiveModelConfig } from '@/lib/model-config';
 
 export async function POST(
   request: NextRequest,
@@ -93,6 +97,104 @@ export async function POST(
         error: 'Failed to update moderation status',
         details: updateError.message 
       }, { status: 500 });
+    }
+
+    // Update curated_qna table if action is accept or edit (feature flag protected)
+    if ((action === 'accept' || action === 'edit') && updateData_result && updateData_result.length > 0) {
+      try {
+        const curatedEnabled = await isFeatureEnabled('curated_guidance_enabled');
+        if (curatedEnabled) {
+          const moderationQueueItem = updateData_result[0];
+          const qnaId = moderationQueueItem.qna_id;
+
+          // Fetch the Q&A row to get question and answer
+          const { data: qnaData, error: qnaError } = await supabase
+            .from('qna')
+            .select('user_question, assistant_answer')
+            .eq('id', qnaId)
+            .single();
+
+          if (!qnaError && qnaData) {
+            // Determine best answer: edited_answer if edit, otherwise assistant_answer
+            const bestAnswer = action === 'edit' && updateData.edited_answer 
+              ? updateData.edited_answer 
+              : qnaData.assistant_answer;
+
+            // Upsert into curated_qna (non-blocking)
+            await upsertCuratedQnA(
+              qnaId,
+              qnaData.user_question,
+              bestAnswer,
+              user.id,
+              moderationQueueItem.id
+            ).catch(err => {
+              console.error('Failed to upsert curated Q&A (non-blocking):', err);
+              // Don't fail the moderation action
+            });
+
+            // Optional auto-upload to vector store if feature flag is enabled
+            const autouploadEnabled = await isFeatureEnabled('vector_store_autoupload_enabled');
+            if (autouploadEnabled) {
+              try {
+                // Get active model version's vector_store_id (or use global VECTOR_STORE_ID)
+                const modelConfig = await getActiveModelConfig();
+                const vectorStoreId = modelConfig.vector_store_id || process.env.VECTOR_STORE_ID;
+
+                if (vectorStoreId) {
+                  // Create small markdown document
+                  const markdown = `Q: ${qnaData.user_question}\n\nA: ${bestAnswer}`;
+                  const fileName = `curated-qna-${qnaId}.md`;
+
+                  // Upload to OpenAI and add to vector store
+                  const { openai } = await import('@/lib/openai');
+                  const tempDir = require('os').tmpdir();
+                  const tempFilePath = require('path').join(tempDir, `${fileName}-${Date.now()}.md`);
+                  const fs = require('fs');
+
+                  try {
+                    fs.writeFileSync(tempFilePath, markdown, 'utf8');
+
+                    const file = await openai.files.create({
+                      file: fs.createReadStream(tempFilePath),
+                      purpose: 'assistants',
+                    });
+
+                    await openai.beta.vectorStores.files.create(vectorStoreId, {
+                      file_id: file.id,
+                    });
+
+                    // Track in vector_store_files table
+                    await trackVectorStoreFile(
+                      file.id,
+                      vectorStoreId,
+                      undefined,
+                      modelConfig.version,
+                      fileName
+                    ).catch(err => {
+                      console.warn('Error tracking vector store file (non-blocking):', err);
+                    });
+
+                    if (fs.existsSync(tempFilePath)) {
+                      fs.unlinkSync(tempFilePath);
+                    }
+                  } catch (uploadError) {
+                    console.error('Error uploading curated item to vector store (non-blocking):', uploadError);
+                    if (fs.existsSync(tempFilePath)) {
+                      fs.unlinkSync(tempFilePath);
+                    }
+                  }
+                }
+              } catch (autouploadError) {
+                console.error('Error in auto-upload process (non-blocking):', autouploadError);
+                // Don't fail the moderation action
+              }
+            }
+          }
+        }
+      } catch (curatedError) {
+        console.error('Error updating curated Q&A (non-blocking):', curatedError);
+        // Don't fail the moderation action
+      }
     }
 
     // Check if retraining should be triggered (only for accepted/edited actions)

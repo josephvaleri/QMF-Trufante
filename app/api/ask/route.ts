@@ -7,6 +7,9 @@ import { moderationService } from "@/lib/moderation";
 import { detectCrisis, crisisResources } from "@/lib/crisis";
 import { z } from "zod";
 import crypto from "crypto";
+import { findSimilarCurated } from "@/lib/curated-qna";
+import { isFeatureEnabled } from "@/lib/feature-flags";
+import { getActiveModelConfig, type ModelConfig } from "@/lib/model-config";
 
 export const runtime = "nodejs";
 
@@ -116,32 +119,25 @@ export async function POST(req: NextRequest) {
 
     const supa = supaServer();
 
-    // Get current model version and configuration
-    const { data: modelConfig } = await supa
-      .from("system_config")
-      .select("value")
-      .eq("key", "current_model_version")
+    // Get active model configuration (includes version and runtime settings)
+    const modelConfig = await getActiveModelConfig();
+    const currentModelVersion = modelConfig.version;
+
+    // Get model version details for enhanced context (metadata only, not runtime config)
+    let modelVersionDetails: any = null;
+    const { data: modelVersionData } = await supa
+      .from("model_versions")
+      .select("training_data_count, performance_metrics, model_config")
+      .eq("version", currentModelVersion)
+      .eq("status", "active")
       .single();
 
-    const currentModelVersion = modelConfig?.value || "v1.0.0";
-
-    // Get model version details for enhanced context
-    let modelVersionDetails: any = null;
-    if (currentModelVersion) {
-      const { data: modelVersionData } = await supa
-        .from("model_versions")
-        .select("training_data_count, performance_metrics, model_config")
-        .eq("version", currentModelVersion)
-        .eq("status", "active")
-        .single();
-
-      modelVersionDetails = modelVersionData;
-      console.log("Active model version details:", {
-        version: currentModelVersion,
-        training_data_count: modelVersionData?.training_data_count,
-        vector_store_enabled: modelVersionData?.performance_metrics?.vector_store_enabled,
-      });
-    }
+    modelVersionDetails = modelVersionData;
+    console.log("Active model version details:", {
+      version: currentModelVersion,
+      training_data_count: modelVersionData?.training_data_count,
+      vector_store_enabled: modelVersionData?.performance_metrics?.vector_store_enabled,
+    });
 
     // Retrieve session context if session_id is provided and user is authenticated
     let sessionContext: Msg[] = [];
@@ -169,7 +165,9 @@ export async function POST(req: NextRequest) {
     // Create enhanced system prompt with model version awareness and Vector Store instructions
     const seedPrompt = process.env.SYSTEM_PROMPT; // already fail-fast checked above
 
-    const vectorStoreNote = process.env.VECTOR_STORE_ID
+    // Use vector_store_id from model config, fallback to env var
+    const vectorStoreId = modelConfig.vector_store_id || process.env.VECTOR_STORE_ID || null;
+    const vectorStoreNote = vectorStoreId
       ? `\n\nIMPORTANT: You have access to a comprehensive knowledge base through the file_search tool. When answering questions, you should search the knowledge base to provide accurate, informed responses based on the curated content available. Use the file_search tool when you need to reference specific information from the knowledge base.`
       : "";
 
@@ -177,7 +175,7 @@ export async function POST(req: NextRequest) {
       ? `\n\nThis model has been trained on ${modelVersionDetails.training_data_count} curated Q&A pairs and knowledge sources.`
       : "";
 
-    const enhancedSystemPrompt = `${seedPrompt}
+    let enhancedSystemPrompt = `${seedPrompt}
 
 Remember:
 - Provide thoughtful, comprehensive responses that fully address the user's question.
@@ -186,6 +184,26 @@ Remember:
 - Be thorough but concise (typically 3–6 sentences, adjust for complexity).
 
 Model Version: ${currentModelVersion}${trainingDataNote}${vectorStoreNote}`;
+
+    // Add curated guidance if feature flag is enabled
+    const curatedGuidanceEnabled = await isFeatureEnabled('curated_guidance_enabled');
+    if (curatedGuidanceEnabled) {
+      try {
+        const similarCurated = await findSimilarCurated(question, 5, 0.7);
+        if (similarCurated && similarCurated.length >= 2) {
+          // Format guidance block (limit to 2-5 pairs for prompt efficiency)
+          const guidancePairs = similarCurated.slice(0, 5);
+          const guidanceBlock = `\n\n=== Reviewed Guidance (similar questions) ===\n${guidancePairs
+            .map((pair) => `Q: ${pair.question}\nA: ${pair.answer}`)
+            .join('\n\n')}\n===\n\nUse these examples as guidance for tone and approach, but do not quote them verbatim unless directly helpful.`;
+          
+          enhancedSystemPrompt = guidanceBlock + '\n\n' + enhancedSystemPrompt;
+        }
+      } catch (error) {
+        console.error('Error fetching curated guidance (non-blocking):', error);
+        // Continue without curated guidance if there's an error
+      }
+    }
 
     // Use session context if available, otherwise use provided history
     const contextMessages = sessionContext.length > 0 ? sessionContext : history;
@@ -205,10 +223,12 @@ Model Version: ${currentModelVersion}${trainingDataNote}${vectorStoreNote}`;
 
     // Generate AI response with Vector Store integration
     console.log("Making OpenAI request...");
-    console.log(
-      "Vector Store ID:",
-      process.env.VECTOR_STORE_ID ? `${process.env.VECTOR_STORE_ID.substring(0, 8)}...` : "not configured"
-    );
+    console.log("Model config:", {
+      version: modelConfig.version,
+      model: modelConfig.openai_model,
+      temperature: modelConfig.temperature,
+      vector_store_id: modelConfig.vector_store_id ? `${modelConfig.vector_store_id.substring(0, 8)}...` : "not configured",
+    });
 
     const readable = new ReadableStream({
       async start(controller) {
@@ -235,165 +255,116 @@ Model Version: ${currentModelVersion}${trainingDataNote}${vectorStoreNote}`;
               controller.enqueue(encoder.encode(data));
               await new Promise((resolve) => setTimeout(resolve, 20));
             }
-          } else if (process.env.VECTOR_STORE_ID) {
+          } else if (vectorStoreId) {
             // Use Assistants API with Vector Store (required for Vector Store search)
-            // Optimized for speed with caching and reduced history
+            // Version-aware assistant caching
             try {
               const startTime = Date.now();
               console.log("Using Assistants API with Vector Store...");
 
-              // ✅ (3) Get or create assistant + update cached instructions when prompt changes
-              const assistantName = `QMF Assistant`;
-              let assistantId: string | null = null;
-
+              // Get or create assistant + update cached instructions when prompt changes
+              const assistantName = `QMF Assistant v${modelConfig.version}`;
+              let assistantId: string | null = modelConfig.assistant_id;
               const desiredInstructionsHash = sha256(enhancedSystemPrompt);
 
-              // Try to get cached assistant ID from database first (fastest)
-              const { data: cachedAssistant } = await supa
-                .from("system_config")
-                .select("value")
-                .eq("key", "assistant_id")
-                .single();
-
-              if (cachedAssistant?.value) {
-                assistantId = cachedAssistant.value;
-              }
-
-              // If cached, verify assistant exists and update instructions if needed
+              // If cached assistant ID exists, verify it's valid and update if needed
               if (assistantId) {
                 try {
                   await openai.beta.assistants.retrieve(assistantId);
 
-                  // Check last-known instructions hash to avoid updating every request
-                  const { data: cachedHashRow } = await supa
-                    .from("system_config")
-                    .select("value")
-                    .eq("key", "assistant_instructions_hash")
-                    .single();
-
-                  const cachedHash = cachedHashRow?.value ?? null;
-
-                  if (cachedHash !== desiredInstructionsHash) {
-                    console.log("Assistant instructions changed; updating cached assistant...");
+                  // Check if instructions hash changed
+                  if (modelConfig.prompt_hash !== desiredInstructionsHash) {
+                    console.log("Assistant instructions changed; updating assistant...");
                     await openai.beta.assistants.update(assistantId, {
                       instructions: enhancedSystemPrompt,
                     });
 
+                    // Update prompt_hash in model_versions
                     await supa
-                      .from("system_config")
-                      .upsert(
-                        {
-                          key: "assistant_instructions_hash",
-                          value: desiredInstructionsHash,
-                          updated_at: new Date().toISOString(),
-                        },
-                        { onConflict: "key" }
-                      );
+                      .from("model_versions")
+                      .update({ prompt_hash: desiredInstructionsHash })
+                      .eq("version", modelConfig.version);
                   } else {
                     console.log("Cached assistant instructions hash matches; no update needed.");
                   }
 
                   console.log("Using cached assistant ID:", assistantId);
                 } catch (e) {
-                  console.warn("Cached assistant invalid; clearing assistant_id cache.");
+                  console.warn("Cached assistant invalid; will create/find new one.");
                   assistantId = null;
-                  await supa.from("system_config").delete().eq("key", "assistant_id");
-                  await supa.from("system_config").delete().eq("key", "assistant_instructions_hash");
                 }
               }
 
               // If no cached assistant, try to find an existing one
-              if (!assistantId) {
+              if (!assistantId && vectorStoreId) {
                 const assistants = await openai.beta.assistants.list({ limit: 10 });
                 const existingAssistant = assistants.data.find(
                   (a) =>
                     a.name === assistantName &&
-                    a.tool_resources?.file_search?.vector_store_ids?.includes(process.env.VECTOR_STORE_ID!)
+                    a.tool_resources?.file_search?.vector_store_ids?.includes(vectorStoreId)
                 );
 
                 if (existingAssistant) {
                   assistantId = existingAssistant.id;
                   console.log("Found existing assistant:", assistantId);
 
-                  // Cache it
-                  await supa
-                    .from("system_config")
-                    .upsert(
-                      {
-                        key: "assistant_id",
-                        value: assistantId,
-                        updated_at: new Date().toISOString(),
-                      },
-                      { onConflict: "key" }
-                    );
-
-                  // Ensure instructions are up to date and cache hash
+                  // Update instructions if needed
                   await openai.beta.assistants.update(assistantId, {
                     instructions: enhancedSystemPrompt,
                   });
 
+                  // Update model_versions with assistant_id and prompt_hash
                   await supa
-                    .from("system_config")
-                    .upsert(
-                      {
-                        key: "assistant_instructions_hash",
-                        value: desiredInstructionsHash,
-                        updated_at: new Date().toISOString(),
-                      },
-                      { onConflict: "key" }
-                    );
+                    .from("model_versions")
+                    .update({
+                      assistant_id: assistantId,
+                      prompt_hash: desiredInstructionsHash,
+                    })
+                    .eq("version", modelConfig.version);
                 }
               }
 
               // If still no assistant, create one
-              if (!assistantId) {
+              if (!assistantId && vectorStoreId) {
                 const assistant = await openai.beta.assistants.create({
                   name: assistantName,
                   instructions: enhancedSystemPrompt,
-                  model: "gpt-4o",
+                  model: modelConfig.openai_model,
                   tools: [{ type: "file_search" }],
                   tool_resources: {
                     file_search: {
-                      vector_store_ids: [process.env.VECTOR_STORE_ID],
+                      vector_store_ids: [vectorStoreId],
                     },
                   },
-                  temperature: 0.3,
+                  temperature: modelConfig.temperature,
                   response_format: { type: "text" },
                 });
 
                 assistantId = assistant.id;
                 console.log("Created new assistant with Vector Store:", assistantId);
 
+                // Store assistant_id and prompt_hash in model_versions
                 await supa
-                  .from("system_config")
-                  .upsert(
-                    {
-                      key: "assistant_id",
-                      value: assistantId,
-                      updated_at: new Date().toISOString(),
-                    },
-                    { onConflict: "key" }
-                  );
+                  .from("model_versions")
+                  .update({
+                    assistant_id: assistantId,
+                    prompt_hash: desiredInstructionsHash,
+                  })
+                  .eq("version", modelConfig.version);
+              }
 
-                await supa
-                  .from("system_config")
-                  .upsert(
-                    {
-                      key: "assistant_instructions_hash",
-                      value: desiredInstructionsHash,
-                      updated_at: new Date().toISOString(),
-                    },
-                    { onConflict: "key" }
-                  );
+              // Use the assistant_id we found/created
+              if (!assistantId) {
+                throw new Error("Failed to get or create assistant");
               }
 
               const assistantTime = Date.now() - startTime;
               console.log(`Assistant setup took ${assistantTime}ms`);
 
-              // Create thread with messages (limit history to last 3 messages for maximum speed)
+              // Create thread with messages (limit history window from model config)
               const recentMessages = contextMessages
                 .filter((msg) => msg.role !== "system") // Remove system messages (handled in assistant instructions)
-                .slice(-3) // Only last 3 messages to maximize speed
+                .slice(-modelConfig.history_window) // Limit to history window from config
                 .map((msg) => ({
                   role: (msg.role === "assistant" ? "assistant" : "user") as "user" | "assistant",
                   content: msg.content,
@@ -452,10 +423,10 @@ Model Version: ${currentModelVersion}${trainingDataNote}${vectorStoreNote}`;
 
               // Fallback to Chat Completions
               const stream = await openai.chat.completions.create({
-                model: "gpt-4o",
+                model: modelConfig.openai_model,
                 messages: input,
                 stream: true,
-                temperature: 0.3,
+                temperature: modelConfig.temperature,
                 max_tokens: 500,
                 presence_penalty: 0.1,
                 frequency_penalty: 0.1,
@@ -479,10 +450,10 @@ Model Version: ${currentModelVersion}${trainingDataNote}${vectorStoreNote}`;
           } else {
             // Normal streaming from OpenAI Chat Completions (no Vector Store)
             const stream = await openai.chat.completions.create({
-              model: "gpt-4o",
+              model: modelConfig.openai_model,
               messages: input,
               stream: true,
-              temperature: 0.3,
+              temperature: modelConfig.temperature,
               max_tokens: 500,
               presence_penalty: 0.1,
               frequency_penalty: 0.1,

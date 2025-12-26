@@ -12,11 +12,26 @@ const openai = new OpenAI({
 
 // Load environment variables
 require('dotenv').config({ path: '.env.local' });
-const VECTOR_STORE_ID = process.env.VECTOR_STORE_ID;
+let VECTOR_STORE_ID = process.env.VECTOR_STORE_ID;
+
+// Parse command line arguments: node scripts/upload-jsonl-chunks.js <file-path> [vector-store-id]
+const args = process.argv.slice(2);
+const filePath = args[0];
+const vectorStoreIdArg = args[1];
+
+if (!filePath) {
+  console.error('❌ Error: File path required');
+  console.error('Usage: node scripts/upload-jsonl-chunks.js <file-path> [vector-store-id]');
+  process.exit(1);
+}
+
+if (vectorStoreIdArg) {
+  VECTOR_STORE_ID = vectorStoreIdArg;
+}
 
 if (!VECTOR_STORE_ID) {
-  console.error('❌ VECTOR_STORE_ID not found in .env.local');
-  console.log('Please run npm run setup-vector-store first');
+  console.error('❌ VECTOR_STORE_ID not found in environment variables or arguments');
+  console.log('Please provide VECTOR_STORE_ID as argument or set it in .env.local');
   process.exit(1);
 }
 
@@ -165,11 +180,10 @@ async function main() {
     // Check vector store status
     await checkVectorStoreStatus();
     
-    // Parse the JSONL file
-    const jsonlPath = path.join('/Users/josephvaleri/Downloads', 'QMF_Prompt_JV_vB_chunks (1).jsonl');
+    // Parse the JSONL file (use file path from command line arguments)
+    const jsonlPath = filePath;
     if (!fs.existsSync(jsonlPath)) {
       console.error('❌ JSONL file not found at:', jsonlPath);
-      console.log('Please ensure the file is in the Downloads folder');
       process.exit(1);
     }
     
