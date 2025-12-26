@@ -63,10 +63,24 @@ export async function POST(request: NextRequest) {
     // For each file, delete from vector store and OpenAI
     for (const file of uniqueFiles) {
       try {
-        // Delete from vector store
+        // Delete from vector store using REST API (vectorStores.files.delete may not be in TypeScript types)
         try {
-          await openai.beta.vectorStores.files.del(file.vector_store_id, file.file_id);
-          cleanupResults.deleted_from_vector_store++;
+          const deleteResponse = await fetch(
+            `https://api.openai.com/v1/vector_stores/${file.vector_store_id}/files/${file.file_id}`,
+            {
+              method: 'DELETE',
+              headers: {
+                'Authorization': `Bearer ${process.env.OPENAI_API_KEY}`,
+                'OpenAI-Beta': 'assistants=v2',
+              },
+            }
+          );
+
+          if (deleteResponse.ok) {
+            cleanupResults.deleted_from_vector_store++;
+          } else {
+            throw new Error(`Delete failed with status ${deleteResponse.status}`);
+          }
         } catch (error) {
           console.warn(`Error deleting ${file.file_id} from vector store:`, error);
           cleanupResults.errors.push(`Vector store deletion failed for ${file.file_id}`);
