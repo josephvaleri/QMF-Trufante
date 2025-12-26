@@ -1,0 +1,14 @@
+<testsuites id="" name="" tests="5" failures="0" skipped="0" errors="0" time="114925.66628300001">
+<testsuite name="clean-auth.spec.ts" timestamp="2025-10-28T11:33:16.222Z" hostname="chromium" tests="5" failures="0" skipped="0" time="19.391" errors="0">
+<testcase name="Clean Authentication System › Home page loads for anonymous users" classname="clean-auth.spec.ts" time="2.713">
+</testcase>
+<testcase name="Clean Authentication System › Login page loads and works" classname="clean-auth.spec.ts" time="5.027">
+</testcase>
+<testcase name="Clean Authentication System › Signup page loads and works" classname="clean-auth.spec.ts" time="5.104">
+</testcase>
+<testcase name="Clean Authentication System › Navigation between pages works" classname="clean-auth.spec.ts" time="4.071">
+</testcase>
+<testcase name="Clean Authentication System › Form validation works" classname="clean-auth.spec.ts" time="2.476">
+</testcase>
+</testsuite>
+</testsuites>
