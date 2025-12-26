@@ -15,37 +15,36 @@ export async function POST(request: NextRequest) {
       .select('*')
       .eq('is_active', false);
 
-    const { data: inactiveVersionFiles, error: inactiveVersionError } = await supabase
+    // Get files with model versions
+    const { data: filesWithVersions, error: filesError } = await supabase
       .from('vector_store_files')
       .select('*, model_version')
-      .not('model_version', 'is', null)
-      .then(async (result) => {
-        // Filter to only files where model_version status is inactive
-        if (result.data) {
-          const versionStrings = [...new Set(result.data.map(f => f.model_version).filter(Boolean))];
-          if (versionStrings.length > 0) {
-            const { data: versions } = await supabase
-              .from('model_versions')
-              .select('version, status')
-              .in('version', versionStrings);
+      .not('model_version', 'is', null);
 
-            const inactiveVersions = new Set(
-              versions?.filter(v => v.status === 'inactive').map(v => v.version) || []
-            );
+    // Filter to only files where model_version status is inactive
+    let inactiveVersionFiles: any[] = [];
+    if (filesWithVersions && filesWithVersions.length > 0) {
+      const versionStrings = [...new Set(filesWithVersions.map(f => f.model_version).filter(Boolean))];
+      if (versionStrings.length > 0) {
+        const { data: versions } = await supabase
+          .from('model_versions')
+          .select('version, status')
+          .in('version', versionStrings);
 
-            return {
-              data: result.data.filter(f => f.model_version && inactiveVersions.has(f.model_version)),
-              error: result.error,
-            };
-          }
-        }
-        return result;
-      });
+        const inactiveVersions = new Set(
+          versions?.filter(v => v.status === 'inactive').map(v => v.version) || []
+        );
+
+        inactiveVersionFiles = filesWithVersions.filter(
+          f => f.model_version && inactiveVersions.has(f.model_version)
+        );
+      }
+    }
 
     // Combine files to clean up
     const filesToCleanup = [
       ...(inactiveFiles || []),
-      ...(inactiveVersionFiles?.data || []),
+      ...inactiveVersionFiles,
     ];
 
     // Remove duplicates by file_id
