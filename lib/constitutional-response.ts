@@ -22,21 +22,24 @@ ${violations.map(v => `- "${v}"`).join('\n')}
 
 Generate a new response that:
 1. Addresses the original question fully
-2. Uses allowed/preferred language patterns:
+2. Uses conversational, flowing paragraphs - NO numbered lists (1., 2., 3.) or bulleted lists (-, *, •)
+3. Uses allowed/preferred language patterns:
    - "Here's how X works..."
-   - "Here are a few options..."
-   - "Here are practical steps..."
    - "I can explain/clarify/outline..."
    - "Let me clarify the difference between..."
-3. Avoids all constitutional violations:
+   - "If it helps to think about it practically..."
+   - "If you want, I can outline..."
+4. CRITICAL: Write conversationally in flowing paragraphs. Never use numbered or bulleted lists.
+5. Avoids all constitutional violations:
    - No role claims (pastor/therapist/counselor)
    - No authority claims ("God says...", "Scripture requires...")
    - No dependency-forming language ("I'm here for you")
    - No therapeutic validation ("Your feelings are valid", "That sounds really hard")
    - No proactive faith initiation
-4. Maintains natural, helpful tone without dependency-forming or therapeutic language
-5. Preserves all factual information from the original intent
-6. Do NOT apologize for the rewrite
+   - NO numbered lists, bulleted lists, or "Here are steps/options..." formats
+6. Maintains natural, helpful tone without dependency-forming or therapeutic language
+7. Preserves all factual information from the original intent but presents it conversationally
+8. Do NOT apologize for the rewrite
 
 Original question: ${originalQuestion}
 

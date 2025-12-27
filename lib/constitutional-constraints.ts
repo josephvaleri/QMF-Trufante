@@ -85,6 +85,19 @@ const FORMAL_INSTITUTIONAL_PATTERNS = [
   /\bIn\s+short\b/i,
 ];
 
+// Structured List Patterns (numbered/bulleted lists - institutional, not conversational)
+const STRUCTURED_LIST_PATTERNS = [
+  /\n\s*\d+\.\s+/, // Numbered list: "1. ", "2. ", etc. (anywhere in response)
+  /^\s*\d+\.\s+/m, // Numbered list at start of line
+  /\s*\d+\.\s+[A-Z]/, // Numbered list with capital letter after (like "1. Reflect")
+  /\n\s*[-*•]\s+/, // Bulleted list: "- ", "* ", "• "
+  /^\s*[-*•]\s+/m, // Bulleted list at start of line
+  /\s*\d+\)\s+/, // Numbered list with parentheses: "1) ", "2) "
+  /\b(Here\s+are|Here'?s)\s+(the\s+)?(steps|options|ways|things|points|items)\s+(you\s+can\s+)?(take|do|try|consider)/i, // "Here are steps you can take"
+  /\b(Here\s+are|Here'?s)\s+(a\s+few\s+)?(options|steps|ways|things)/i, // "Here are a few options"
+  /\b(First|Second|Third|Fourth|Fifth|Finally|Lastly|Next)\s*[,:]\s+/i, // "First,", "Second:", etc.
+];
+
 // Permission-Seeking Escalation (only therapy-shaped invites, not pragmatic questions)
 const PERMISSION_SEEKING_PATTERNS = [
   /\bWould\s+you\s+like\s+to\s+(share\s+more|open\s+up|talk\s+about\s+(your\s+)?feelings|explore\s+(that|this|it)|dive\s+deeper)\s*(more|further|into)?\??\b/i,
@@ -122,6 +135,7 @@ const ALL_VIOLATION_PATTERNS = [
   ...PROACTIVE_FAITH_PATTERNS.map(p => ({ pattern: p, category: 'proactive-faith', severity: 'block' as const })),
   ...ROLE_CLAIM_PATTERNS.map(p => ({ pattern: p, category: 'role-claim', severity: 'block' as const })),
   ...FORMAL_INSTITUTIONAL_PATTERNS.map(p => ({ pattern: p, category: 'formal-institutional', severity: 'block' as const })),
+  ...STRUCTURED_LIST_PATTERNS.map(p => ({ pattern: p, category: 'structured-list', severity: 'block' as const })),
 ];
 
 /**
