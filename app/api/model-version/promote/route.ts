@@ -1,5 +1,6 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { supaServer } from '@/lib/supabase/server';
+import { requireAdmin } from '@/lib/auth-helpers';
 import { z } from 'zod';
 
 const promoteSchema = z.object({
@@ -8,6 +9,7 @@ const promoteSchema = z.object({
 
 export async function POST(request: NextRequest) {
   try {
+    const user = await requireAdmin(request);
     const supabase = supaServer();
 
     // Parse and validate request body
@@ -88,6 +90,7 @@ export async function POST(request: NextRequest) {
       version,
     });
   } catch (error) {
+    if (error instanceof Response) throw error;
     console.error('Error promoting model version:', error);
     if (error instanceof z.ZodError) {
       return NextResponse.json(

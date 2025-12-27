@@ -1,5 +1,6 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { z } from 'zod';
+import { requireModerator } from '@/lib/auth-helpers';
 import { runEvaluation } from '@/lib/evaluation';
 
 const runEvaluationSchema = z.object({
@@ -9,6 +10,7 @@ const runEvaluationSchema = z.object({
 
 export async function POST(request: NextRequest) {
   try {
+    const user = await requireModerator(request);
     // Parse and validate request body
     const body = await request.json();
     const { model_version, eval_set_id } = runEvaluationSchema.parse(body);
@@ -22,6 +24,7 @@ export async function POST(request: NextRequest) {
       message: `Evaluation run ${evalRunId} started for model version ${model_version}`,
     });
   } catch (error) {
+    if (error instanceof Response) throw error;
     console.error('Error running evaluation:', error);
     if (error instanceof z.ZodError) {
       return NextResponse.json(

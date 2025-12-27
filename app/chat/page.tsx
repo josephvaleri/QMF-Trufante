@@ -55,10 +55,21 @@ function ChatContent() {
 
   useEffect(() => {
     // Check if user is logged in
-    const checkUser = async () => {
+    const checkUser = async (retryCount = 0) => {
       const supabase = supaBrowser();
-      const { data: { user } } = await supabase.auth.getUser();
+      
+      // First, get the session to refresh from cookies
+      const { data: { session }, error: sessionError } = await supabase.auth.getSession();
+      
+      if (sessionError) {
+        console.error('Session error:', sessionError);
+      }
+      
+      // Then get the user from the session
+      const user = session?.user;
+      
       if (user) {
+        console.log('User found:', user.id);
         setIsLoggedIn(true);
         setUser(user);
         
@@ -84,10 +95,17 @@ function ChatContent() {
           }
         }
       } else {
-        setIsLoggedIn(false);
-        setUser(null);
-        setUserProfile(null);
-        setIsModerator(false);
+        // Retry once after a short delay if no user found (cookies might still be setting)
+        if (retryCount === 0) {
+          console.log('No user found, retrying after delay...');
+          setTimeout(() => checkUser(1), 500);
+        } else {
+          console.log('No user found after retry');
+          setIsLoggedIn(false);
+          setUser(null);
+          setUserProfile(null);
+          setIsModerator(false);
+        }
       }
     };
 
@@ -311,9 +329,31 @@ function ChatContent() {
   }
 
   const handleLogout = async () => {
-    const supabase = supaBrowser();
-    await supabase.auth.signOut();
-    router.push('/');
+    try {
+      const supabase = supaBrowser();
+      const { error } = await supabase.auth.signOut();
+      
+      if (error) {
+        console.error('Logout error:', error);
+        // Still redirect even if signOut fails
+      }
+      
+      // Clear local state
+      setIsLoggedIn(false);
+      setUser(null);
+      setUserProfile(null);
+      setIsModerator(false);
+      setMessages([]);
+      setSessions([]);
+      setCurrentSessionId(null);
+      
+      // Redirect to home page with full page reload to clear cookies
+      window.location.href = '/';
+    } catch (error) {
+      console.error('Error during logout:', error);
+      // Still redirect on error
+      window.location.href = '/';
+    }
   };
 
   return (

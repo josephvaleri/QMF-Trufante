@@ -1,8 +1,10 @@
 import { NextRequest, NextResponse } from 'next/server';
 import OpenAI from 'openai';
+import { requireModerator } from '@/lib/auth-helpers';
 
 export async function GET(request: NextRequest) {
   try {
+    const user = await requireModerator(request);
     const vectorStoreId = process.env.VECTOR_STORE_ID;
     const openaiApiKey = process.env.OPENAI_API_KEY;
 
@@ -138,6 +140,7 @@ export async function GET(request: NextRequest) {
     });
 
   } catch (error: any) {
+    if (error instanceof Response) throw error;
     console.error('Error checking Vector Store:', error);
     return NextResponse.json({ 
       error: 'Failed to check Vector Store',

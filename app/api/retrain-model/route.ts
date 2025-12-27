@@ -3,7 +3,14 @@ import { supaServer } from '@/lib/supabase/server';
 import { openai } from '@/lib/openai';
 import { buildKnowledgePack, uploadKnowledgePack, createVectorStoreForVersion, trackVectorStoreFile } from '@/lib/knowledge-pack';
 import { isFeatureEnabled } from '@/lib/feature-flags';
+import { requireAdmin } from '@/lib/auth-helpers';
+import { rateLimit } from '@/lib/rate-limit';
+import { z } from 'zod';
 import crypto from 'crypto';
+
+const retrainSchema = z.object({
+  isInitialBuild: z.boolean().optional(),
+}).optional();
 
 // Helper: hash prompt to detect changes
 function sha256(text: string) {
@@ -12,6 +19,11 @@ function sha256(text: string) {
 
 export async function POST(request: NextRequest) {
   try {
+    const user = await requireAdmin(request);
+    
+    // Rate limiting: 5 requests/hour per user
+    await rateLimit(`retrain:${user.id}`, 5, 60 * 60 * 1000); // 5 requests per hour
+    
     const supabase = supaServer();
     
     // Check feature flag
@@ -21,13 +33,29 @@ export async function POST(request: NextRequest) {
       return legacyRetrainModel(request);
     }
 
-    // Try to parse request body, but don't fail if empty
+    // Parse and validate request body with Zod
     let isInitialBuild = false;
     try {
-      const body = await request.json();
-      isInitialBuild = body.isInitialBuild || false;
-    } catch {
-      // No body provided, that's okay - check if this is first model version
+      const body = await request.json().catch(() => ({}));
+      const validated = retrainSchema.parse(body);
+      isInitialBuild = validated?.isInitialBuild || false;
+    } catch (error) {
+      if (error instanceof z.ZodError) {
+        return NextResponse.json(
+          { error: 'Invalid request body', details: error.issues },
+          { status: 400 }
+        );
+      }
+      // If JSON parsing fails (empty body), that's okay - check if this is first model version
+      const { data: existingVersions } = await supabase
+        .from('model_versions')
+        .select('id')
+        .limit(1);
+      isInitialBuild = !existingVersions || existingVersions.length === 0;
+    }
+
+    // If not provided in body, check if this is first model version
+    if (!isInitialBuild) {
       const { data: existingVersions } = await supabase
         .from('model_versions')
         .select('id')
@@ -248,6 +276,13 @@ export async function POST(request: NextRequest) {
       status: 'testing',
     });
   } catch (error) {
+    if (error instanceof Response) throw error;
+    if (error instanceof z.ZodError) {
+      return NextResponse.json(
+        { error: 'Invalid request body', details: error.issues },
+        { status: 400 }
+      );
+    }
     console.error('Knowledge pack build error:', error);
     return NextResponse.json({ 
       error: 'Internal server error during knowledge pack build',

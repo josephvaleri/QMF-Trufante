@@ -44,21 +44,28 @@ function AuthContent() {
     setSuccess("");
 
     try {
-      const { error } = await supabase.auth.signInWithPassword({
+      const { data: authData, error } = await supabase.auth.signInWithPassword({
         email,
         password,
       });
 
       if (error) throw error;
 
+      if (!authData.user) {
+        throw new Error('Login failed - no user returned');
+      }
+
       setSuccess("Login successful! Redirecting...");
+      
+      // Redirect with full page reload to ensure cookies are read
+      // Small delay to show success message
       setTimeout(() => {
-        router.push('/chat');
-      }, 1000);
+        window.location.href = '/chat';
+      }, 500);
+      
     } catch (error: any) {
-      setError(error.message || "An error occurred during login");
-    } finally {
       setIsLoading(false);
+      setError(error.message || "An error occurred during login");
     }
   }
 

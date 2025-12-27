@@ -10,10 +10,21 @@ import crypto from "crypto";
 import { findSimilarCurated } from "@/lib/curated-qna";
 import { isFeatureEnabled } from "@/lib/feature-flags";
 import { getActiveModelConfig, type ModelConfig } from "@/lib/model-config";
+import { rateLimit } from "@/lib/rate-limit";
+import { 
+  checkUserInputBoundaries, 
+  validateResponseConstitution, 
+  generateBoundaryRedirect,
+  logConstitutionalViolation,
+  quickViolationCheck,
+  sha256 as hashPrompt
+} from "@/lib/constitutional-constraints";
+import { buildConstitutionalPrompt, getPromptHash } from "@/lib/constitutional-prompt";
+import { generateConstitutionallyCompliantResponse } from "@/lib/constitutional-response";
 
 export const runtime = "nodejs";
 
-type Msg = { role: "user" | "assistant" | "system"; content: string };
+export type Msg = { role: "user" | "assistant" | "system"; content: string };
 
 const schema = z.object({
   question: z.string().min(1).max(4000),
@@ -29,17 +40,65 @@ const schema = z.object({
   session_id: z.string().uuid().optional(),
 });
 
-// ✅ (2) helper: hash prompt to detect changes
-function sha256(text: string) {
-  return crypto.createHash("sha256").update(text, "utf8").digest("hex");
-}
+// Helper: hash prompt to detect changes (using imported function from constitutional-constraints)
 
 export async function POST(req: NextRequest) {
   try {
     const { question, history, session_id } = schema.parse(await req.json());
 
+    // Rate limiting: 100 requests/hour per IP
+    // Get IP from headers (x-forwarded-for for proxied requests, x-real-ip as fallback)
+    const forwardedFor = req.headers.get('x-forwarded-for');
+    const realIp = req.headers.get('x-real-ip');
+    const ip = (forwardedFor ? forwardedFor.split(',')[0].trim() : null) || realIp || 'unknown';
+    await rateLimit(`ask:${ip}`, 100, 60 * 60 * 1000); // 100 requests per hour
+
     // Check for crisis situations FIRST (before moderation)
     const crisis = detectCrisis(question);
+
+    // Check if constitutional constraints are enabled
+    const constitutionalConstraintsEnabled = await isFeatureEnabled('constitutional_constraints_enabled');
+    
+    if (constitutionalConstraintsEnabled) {
+      console.log('✅ Constitutional constraints ENABLED');
+    } else {
+      console.log('⚠️ Constitutional constraints DISABLED');
+    }
+
+    // Constitutional constraints: Check user input boundaries (soft boundary)
+    // This runs after crisis detection but before moderation
+    // Constitutional validation runs AFTER moderation but BEFORE response streaming (hard constraints)
+    if (constitutionalConstraintsEnabled) {
+      const boundaryCheck = checkUserInputBoundaries(question);
+      if (boundaryCheck.isOutOfBounds && boundaryCheck.reason) {
+        // Soft redirect - stream boundary message instead of processing
+        const redirectMessage = generateBoundaryRedirect(boundaryCheck);
+        if (redirectMessage) {
+          const encoder = new TextEncoder();
+          const readable = new ReadableStream({
+            async start(controller) {
+              const chunks = redirectMessage.split(" ");
+              for (const chunk of chunks) {
+                const data = `data: ${JSON.stringify({
+                  choices: [{ delta: { content: chunk + " " } }],
+                })}\n\n`;
+                controller.enqueue(encoder.encode(data));
+                await new Promise((resolve) => setTimeout(resolve, 20));
+              }
+              controller.enqueue(encoder.encode("data: [DONE]\n\n"));
+              controller.close();
+            },
+          });
+          return new Response(readable, {
+            headers: {
+              "Content-Type": "text/event-stream",
+              "Cache-Control": "no-cache, no-transform",
+              Connection: "keep-alive",
+            },
+          });
+        }
+      }
+    }
 
     // Check user input for inappropriate content
     const moderationResult = await moderationService.checkText(question);
@@ -162,20 +221,56 @@ export async function POST(req: NextRequest) {
       }
     }
 
-    // Create enhanced system prompt with model version awareness and Vector Store instructions
-    const seedPrompt = process.env.SYSTEM_PROMPT; // already fail-fast checked above
-
+    // CRITICAL (Section A): Load master system prompt verbatim - must be first instruction
+    const masterSystemPrompt = process.env.SYSTEM_PROMPT!.trim();
+    
     // Use vector_store_id from model config, fallback to env var
     const vectorStoreId = modelConfig.vector_store_id || process.env.VECTOR_STORE_ID || null;
     const vectorStoreNote = vectorStoreId
       ? `\n\nIMPORTANT: You have access to a comprehensive knowledge base through the file_search tool. When answering questions, you should search the knowledge base to provide accurate, informed responses based on the curated content available. Use the file_search tool when you need to reference specific information from the knowledge base.`
       : "";
 
-    const trainingDataNote = modelVersionDetails?.training_data_count
-      ? `\n\nThis model has been trained on ${modelVersionDetails.training_data_count} curated Q&A pairs and knowledge sources.`
-      : "";
+    // Use session context if available, otherwise use provided history
+    const contextMessages = sessionContext.length > 0 ? sessionContext : history;
 
-    let enhancedSystemPrompt = `${seedPrompt}
+    // Build system prompt based on whether constitutional constraints are enabled
+    let enhancedSystemPrompt: string;
+    let similarCurated: Array<{ question: string; answer: string }> | undefined = undefined;
+
+    if (constitutionalConstraintsEnabled) {
+      // Constitutional constraints enabled - use constitutional prompt builder
+      // Get curated guidance if feature flag is enabled
+      const curatedGuidanceEnabled = await isFeatureEnabled('curated_guidance_enabled');
+      if (curatedGuidanceEnabled) {
+        try {
+          similarCurated = await findSimilarCurated(question, 5, 0.7) || undefined;
+        } catch (error) {
+          console.error('Error fetching curated guidance (non-blocking):', error);
+        }
+      }
+
+      // Build constitutional prompt (master prompt must be first - Section A)
+      enhancedSystemPrompt = buildConstitutionalPrompt(
+        masterSystemPrompt,
+        currentModelVersion,
+        modelVersionDetails?.training_data_count,
+        vectorStoreNote || undefined,
+        similarCurated,
+        contextMessages // For detecting user-initiated faith topics
+      );
+
+      // Verify master prompt is still first (Section A verification)
+      if (!enhancedSystemPrompt.startsWith(masterSystemPrompt)) {
+        console.error('CRITICAL: Constitutional prompt does not start with master prompt (Section A violation)');
+        throw new Error('System prompt authority violation - master prompt must be first');
+      }
+    } else {
+      // Legacy mode - build prompt without constitutional constraints
+      const trainingDataNote = modelVersionDetails?.training_data_count
+        ? `\n\nThis model has been trained on ${modelVersionDetails.training_data_count} curated Q&A pairs and knowledge sources.`
+        : "";
+
+      enhancedSystemPrompt = `${masterSystemPrompt}
 
 Remember:
 - Provide thoughtful, comprehensive responses that fully address the user's question.
@@ -185,28 +280,24 @@ Remember:
 
 Model Version: ${currentModelVersion}${trainingDataNote}${vectorStoreNote}`;
 
-    // Add curated guidance if feature flag is enabled
-    const curatedGuidanceEnabled = await isFeatureEnabled('curated_guidance_enabled');
-    if (curatedGuidanceEnabled) {
-      try {
-        const similarCurated = await findSimilarCurated(question, 5, 0.7);
-        if (similarCurated && similarCurated.length >= 2) {
-          // Format guidance block (limit to 2-5 pairs for prompt efficiency)
-          const guidancePairs = similarCurated.slice(0, 5);
-          const guidanceBlock = `\n\n=== Reviewed Guidance (similar questions) ===\n${guidancePairs
-            .map((pair) => `Q: ${pair.question}\nA: ${pair.answer}`)
-            .join('\n\n')}\n===\n\nUse these examples as guidance for tone and approach, but do not quote them verbatim unless directly helpful.`;
-          
-          enhancedSystemPrompt = guidanceBlock + '\n\n' + enhancedSystemPrompt;
+      // Add curated guidance if feature flag is enabled
+      const curatedGuidanceEnabled = await isFeatureEnabled('curated_guidance_enabled');
+      if (curatedGuidanceEnabled) {
+        try {
+          similarCurated = await findSimilarCurated(question, 5, 0.7) || undefined;
+          if (similarCurated && similarCurated.length >= 2) {
+            const guidancePairs = similarCurated.slice(0, 5);
+            const guidanceBlock = `\n\n=== Reviewed Guidance (similar questions) ===\n${guidancePairs
+              .map((pair) => `Q: ${pair.question}\nA: ${pair.answer}`)
+              .join('\n\n')}\n===\n\nUse these examples as guidance for tone and approach, but do not quote them verbatim unless directly helpful.`;
+            
+            enhancedSystemPrompt = guidanceBlock + '\n\n' + enhancedSystemPrompt;
+          }
+        } catch (error) {
+          console.error('Error fetching curated guidance (non-blocking):', error);
         }
-      } catch (error) {
-        console.error('Error fetching curated guidance (non-blocking):', error);
-        // Continue without curated guidance if there's an error
       }
     }
-
-    // Use session context if available, otherwise use provided history
-    const contextMessages = sessionContext.length > 0 ? sessionContext : history;
 
     const input: Msg[] = [
       { role: "system", content: enhancedSystemPrompt },
@@ -265,7 +356,7 @@ Model Version: ${currentModelVersion}${trainingDataNote}${vectorStoreNote}`;
               // Get or create assistant + update cached instructions when prompt changes
               const assistantName = `QMF Assistant v${modelConfig.version}`;
               let assistantId: string | null = modelConfig.assistant_id;
-              const desiredInstructionsHash = sha256(enhancedSystemPrompt);
+              const desiredInstructionsHash = hashPrompt(enhancedSystemPrompt);
 
               // If cached assistant ID exists, verify it's valid and update if needed
               if (assistantId) {
@@ -388,9 +479,14 @@ Model Version: ${currentModelVersion}${trainingDataNote}${vectorStoreNote}`;
                 assistant_id: assistantId!,
               });
 
-              // Stream the assistant response immediately (no timeout - let it complete)
+              // Buffer response for constitutional validation (hard constraint enforcement)
+              // Section H: No post-processing except violation replacement
+              // Phase 3: Add chunk-based early detection for never-allowed phrases
               let assistantResponse = "";
               let firstChunk = true;
+              const responseChunks: string[] = [];
+              let earlyWarning = false;
+              let replacementPromise: Promise<string | null> | null = null;
 
               for await (const event of runStream) {
                 if (event.event === "thread.message.delta") {
@@ -401,20 +497,125 @@ Model Version: ${currentModelVersion}${trainingDataNote}${vectorStoreNote}`;
                       firstChunk = false;
                     }
                     assistantResponse += content;
-                    // Stream immediately to user
-                    const data = `data: ${JSON.stringify({
-                      choices: [
-                        {
-                          delta: { content: content },
-                        },
-                      ],
-                    })}\n\n`;
-                    controller.enqueue(encoder.encode(data));
+                    responseChunks.push(content);
+                    
+                    // Quick check every 200 chars for never-allowed phrases only
+                    if (constitutionalConstraintsEnabled && assistantResponse.length % 200 < content.length) {
+                      const quickCheck = quickViolationCheck(assistantResponse);
+                      if (quickCheck.highConfidenceViolation && !replacementPromise) {
+                        earlyWarning = true;
+                        console.log('Early warning: High-confidence violation detected during streaming');
+                        // Start replacement generation in parallel (don't await)
+                        replacementPromise = generateConstitutionallyCompliantResponse(
+                          question,
+                          quickCheck.detectedPatterns,
+                          contextMessages,
+                          masterSystemPrompt
+                        ).catch(err => {
+                          console.error('Error in early replacement generation:', err);
+                          return null;
+                        });
+                      }
+                    }
                   }
                 }
               }
 
-              fullResponse = assistantResponse;
+              // Raw model response collected - validate before streaming (hard constraint)
+              let responseToStream = assistantResponse;
+              const rawResponse = assistantResponse; // Store raw for platform interference check
+
+              if (constitutionalConstraintsEnabled) {
+                const validation = validateResponseConstitution(assistantResponse);
+                
+                console.log('Constitutional validation:', {
+                  violated: validation.violated,
+                  violationCount: validation.violations.length,
+                  categories: validation.categories,
+                  responseLength: assistantResponse.length,
+                  earlyWarning,
+                });
+                
+                if (validation.violated && validation.severity === 'block') {
+                  console.warn('Constitutional violation detected in streaming response - generating replacement');
+                  
+                  // Use replacement if already generating, otherwise start now
+                  try {
+                    let replacementResponse: string;
+                    if (replacementPromise) {
+                      // Already generating - await it
+                      const earlyReplacement = await replacementPromise;
+                      if (earlyReplacement) {
+                        replacementResponse = earlyReplacement;
+                      } else {
+                        // Early replacement failed, generate new one
+                        replacementResponse = await generateConstitutionallyCompliantResponse(
+                          question,
+                          validation.violations,
+                          contextMessages,
+                          masterSystemPrompt
+                        );
+                      }
+                    } else {
+                      // Start replacement now
+                      replacementResponse = await generateConstitutionallyCompliantResponse(
+                        question,
+                        validation.violations,
+                        contextMessages,
+                        masterSystemPrompt
+                      );
+                    }
+                    
+                    responseToStream = replacementResponse;
+                    
+                    // Log violation
+                    await logConstitutionalViolation(
+                      question,
+                      rawResponse,
+                      validation.violations,
+                      replacementResponse,
+                      undefined, // qnaId not yet created
+                      currentModelVersion
+                    );
+                  } catch (replacementError) {
+                    console.error('Error generating compliant response:', replacementError);
+                    // Fallback: use boundary message
+                    responseToStream = generateBoundaryRedirect({ 
+                      isOutOfBounds: true, 
+                      category: 'other' 
+                    });
+                  }
+                }
+              }
+
+              // Stream the validated/replaced response
+              if (responseToStream !== assistantResponse) {
+                // Response was replaced - stream replacement word by word
+                const chunks = responseToStream.split(" ");
+                for (const chunk of chunks) {
+                  const data = `data: ${JSON.stringify({
+                    choices: [{ delta: { content: chunk + " " } }],
+                  })}\n\n`;
+                  controller.enqueue(encoder.encode(data));
+                  await new Promise((resolve) => setTimeout(resolve, 20));
+                }
+              } else {
+                // Stream original chunks (no violation)
+                for (const chunk of responseChunks) {
+                  const data = `data: ${JSON.stringify({
+                    choices: [{ delta: { content: chunk } }],
+                  })}\n\n`;
+                  controller.enqueue(encoder.encode(data));
+                }
+              }
+
+              fullResponse = responseToStream; // Use validated/replaced response
+              
+              // Platform interference check (Section H): Log if raw response differs from streamed
+              if (constitutionalConstraintsEnabled && rawResponse !== responseToStream) {
+                console.log('Platform interference check: Response replaced due to constitutional violation');
+                // This is expected when violations occur - log for audit
+              }
               console.log(
                 `✅ Assistant response complete (total: ${Date.now() - startTime}ms, response length: ${assistantResponse.length} chars)`
               );
@@ -422,12 +623,18 @@ Model Version: ${currentModelVersion}${trainingDataNote}${vectorStoreNote}`;
               console.error("Error using Assistants API, falling back to Chat Completions:", assistantError);
 
               // Fallback to Chat Completions
+              // Buffer for constitutional validation with early detection
+              let fallbackResponse = "";
+              const fallbackChunks: string[] = [];
+              let fallbackEarlyWarning = false;
+              let fallbackReplacementPromise: Promise<string | null> | null = null;
+              
               const stream = await openai.chat.completions.create({
                 model: modelConfig.openai_model,
                 messages: input,
                 stream: true,
                 temperature: modelConfig.temperature,
-                max_tokens: 500,
+                max_tokens: 800, // Increased for more comprehensive responses
                 presence_penalty: 0.1,
                 frequency_penalty: 0.1,
               });
@@ -435,26 +642,119 @@ Model Version: ${currentModelVersion}${trainingDataNote}${vectorStoreNote}`;
               for await (const chunk of stream) {
                 if (chunk.choices[0]?.delta?.content) {
                   const content = chunk.choices[0].delta.content;
-                  fullResponse += content;
+                  fallbackResponse += content;
+                  fallbackChunks.push(content);
+                  
+                  // Quick check every 200 chars for never-allowed phrases only
+                  if (constitutionalConstraintsEnabled && fallbackResponse.length % 200 < content.length) {
+                    const quickCheck = quickViolationCheck(fallbackResponse);
+                    if (quickCheck.highConfidenceViolation && !fallbackReplacementPromise) {
+                      fallbackEarlyWarning = true;
+                      console.log('Early warning: High-confidence violation detected in fallback streaming');
+                      // Start replacement generation in parallel (don't await)
+                      fallbackReplacementPromise = generateConstitutionallyCompliantResponse(
+                        question,
+                        quickCheck.detectedPatterns,
+                        contextMessages,
+                        masterSystemPrompt
+                      ).catch(err => {
+                        console.error('Error in early fallback replacement generation:', err);
+                        return null;
+                      });
+                    }
+                  }
+                }
+              }
+
+              // Validate fallback response
+              let fallbackToStream = fallbackResponse;
+              const rawFallback = fallbackResponse;
+
+              if (constitutionalConstraintsEnabled) {
+                const validation = validateResponseConstitution(fallbackResponse);
+                
+                if (validation.violated && validation.severity === 'block') {
+                  console.warn('Constitutional violation in fallback response - generating replacement');
+                  try {
+                    let replacement: string;
+                    if (fallbackReplacementPromise) {
+                      // Already generating - await it
+                      const earlyReplacement = await fallbackReplacementPromise;
+                      if (earlyReplacement) {
+                        replacement = earlyReplacement;
+                      } else {
+                        // Early replacement failed, generate new one
+                        replacement = await generateConstitutionallyCompliantResponse(
+                          question,
+                          validation.violations,
+                          contextMessages,
+                          masterSystemPrompt
+                        );
+                      }
+                    } else {
+                      // Start replacement now
+                      replacement = await generateConstitutionallyCompliantResponse(
+                        question,
+                        validation.violations,
+                        contextMessages,
+                        masterSystemPrompt
+                      );
+                    }
+                    fallbackToStream = replacement;
+                    
+                    await logConstitutionalViolation(
+                      question,
+                      rawFallback,
+                      validation.violations,
+                      replacement,
+                      undefined,
+                      currentModelVersion
+                    );
+                  } catch (replacementError) {
+                    console.error('Error generating compliant fallback:', replacementError);
+                    fallbackToStream = generateBoundaryRedirect({ 
+                      isOutOfBounds: true, 
+                      category: 'other' 
+                    });
+                  }
+                }
+              }
+
+              // Stream validated/replaced fallback
+              if (fallbackToStream !== fallbackResponse) {
+                const chunks = fallbackToStream.split(" ");
+                for (const chunk of chunks) {
                   const data = `data: ${JSON.stringify({
-                    choices: [
-                      {
-                        delta: { content: content },
-                      },
-                    ],
+                    choices: [{ delta: { content: chunk + " " } }],
+                  })}\n\n`;
+                  controller.enqueue(encoder.encode(data));
+                  await new Promise((resolve) => setTimeout(resolve, 20));
+                }
+              } else {
+                for (const chunk of fallbackChunks) {
+                  const data = `data: ${JSON.stringify({
+                    choices: [{ delta: { content: chunk } }],
                   })}\n\n`;
                   controller.enqueue(encoder.encode(data));
                 }
               }
+
+              fullResponse = fallbackToStream;
             }
           } else {
             // Normal streaming from OpenAI Chat Completions (no Vector Store)
+            // Buffer for constitutional validation with early detection
+            let chatResponse = "";
+            const chatChunks: string[] = [];
+            let chatEarlyWarning = false;
+            let chatReplacementPromise: Promise<string | null> | null = null;
+            
             const stream = await openai.chat.completions.create({
               model: modelConfig.openai_model,
               messages: input,
               stream: true,
               temperature: modelConfig.temperature,
-              max_tokens: 500,
+              max_tokens: 800, // Increased for more comprehensive responses
               presence_penalty: 0.1,
               frequency_penalty: 0.1,
             });
@@ -462,20 +762,112 @@ Model Version: ${currentModelVersion}${trainingDataNote}${vectorStoreNote}`;
             for await (const chunk of stream) {
               if (chunk.choices[0]?.delta?.content) {
                 const content = chunk.choices[0].delta.content;
-                fullResponse += content; // Accumulate full response
+                chatResponse += content;
+                chatChunks.push(content);
+                
+                // Quick check every 200 chars for never-allowed phrases only
+                if (constitutionalConstraintsEnabled && chatResponse.length % 200 < content.length) {
+                  const quickCheck = quickViolationCheck(chatResponse);
+                  if (quickCheck.highConfidenceViolation && !chatReplacementPromise) {
+                    chatEarlyWarning = true;
+                    console.log('Early warning: High-confidence violation detected in chat streaming');
+                    // Start replacement generation in parallel (don't await)
+                    chatReplacementPromise = generateConstitutionallyCompliantResponse(
+                      question,
+                      quickCheck.detectedPatterns,
+                      contextMessages,
+                      masterSystemPrompt
+                    ).catch(err => {
+                      console.error('Error in early chat replacement generation:', err);
+                      return null;
+                    });
+                  }
+                }
+              }
+            }
+
+            // Validate chat response
+            let chatToStream = chatResponse;
+            const rawChat = chatResponse;
+
+            if (constitutionalConstraintsEnabled) {
+              const validation = validateResponseConstitution(chatResponse);
+              
+              if (validation.violated && validation.severity === 'block') {
+                console.warn('Constitutional violation in chat response - generating replacement');
+                try {
+                  let replacement: string;
+                  if (chatReplacementPromise) {
+                    // Already generating - await it
+                    const earlyReplacement = await chatReplacementPromise;
+                    if (earlyReplacement) {
+                      replacement = earlyReplacement;
+                    } else {
+                      // Early replacement failed, generate new one
+                      replacement = await generateConstitutionallyCompliantResponse(
+                        question,
+                        validation.violations,
+                        contextMessages,
+                        masterSystemPrompt
+                      );
+                    }
+                  } else {
+                    // Start replacement now
+                    replacement = await generateConstitutionallyCompliantResponse(
+                      question,
+                      validation.violations,
+                      contextMessages,
+                      masterSystemPrompt
+                    );
+                  }
+                  chatToStream = replacement;
+                  
+                  await logConstitutionalViolation(
+                    question,
+                    rawChat,
+                    validation.violations,
+                    replacement,
+                    undefined,
+                    currentModelVersion
+                  );
+                } catch (replacementError) {
+                  console.error('Error generating compliant chat response:', replacementError);
+                  chatToStream = generateBoundaryRedirect({ 
+                    isOutOfBounds: true, 
+                    category: 'other' 
+                  });
+                }
+              }
+            }
+
+            // Stream validated/replaced chat response
+            if (chatToStream !== chatResponse) {
+              const chunks = chatToStream.split(" ");
+              for (const chunk of chunks) {
                 const data = `data: ${JSON.stringify({
-                  choices: [
-                    {
-                      delta: { content: content },
-                    },
-                  ],
+                  choices: [{ delta: { content: chunk + " " } }],
+                })}\n\n`;
+                controller.enqueue(encoder.encode(data));
+                await new Promise((resolve) => setTimeout(resolve, 20));
+              }
+            } else {
+              for (const chunk of chatChunks) {
+                const data = `data: ${JSON.stringify({
+                  choices: [{ delta: { content: chunk } }],
                 })}\n\n`;
                 controller.enqueue(encoder.encode(data));
               }
             }
+
+            fullResponse = chatToStream;
           }
 
           controller.enqueue(encoder.encode("data: [DONE]\n\n"));
+
+          // Response has been validated and replaced if needed during streaming
+          // fullResponse now contains the validated/replaced response
+          // Platform interference check: raw response should match streamed except for violations
+          let qnaId: number | undefined = undefined;
 
           // NOW save to database AFTER stream completes
           console.log("Stream complete, saving to database...");
@@ -512,7 +904,7 @@ Model Version: ${currentModelVersion}${trainingDataNote}${vectorStoreNote}`;
               user_id: user?.id ?? null,
               anon_session_id: user ? null : anon,
               user_question: question,
-              assistant_answer: fullResponse,
+              assistant_answer: fullResponse, // Use validated/replaced response
             })
             .select("id")
             .single();
@@ -522,7 +914,26 @@ Model Version: ${currentModelVersion}${trainingDataNote}${vectorStoreNote}`;
             console.error("Auth user:", user);
             console.error("Anon session:", anon);
           } else {
+            qnaId = qnaRow.id;
             console.log("Successfully inserted Q&A with ID:", qnaRow.id);
+
+            // Update violation log with qnaId if violation was detected (violations already logged during streaming)
+            // The violation was logged with replacement response, now link to qnaId
+            if (constitutionalConstraintsEnabled && !crisis.isCrisis) {
+              try {
+                const supa = supaServer();
+                // Update most recent violation log for this question with qnaId
+                await supa
+                  .from('constitutional_violations')
+                  .update({ qna_id: qnaId })
+                  .eq('question', question)
+                  .is('qna_id', null)
+                  .order('detected_at', { ascending: false })
+                  .limit(1);
+              } catch (updateError) {
+                console.error('Error updating violation log with qnaId:', updateError);
+              }
+            }
 
             // Track model performance metrics
             try {
@@ -545,18 +956,21 @@ Model Version: ${currentModelVersion}${trainingDataNote}${vectorStoreNote}`;
             }
 
             // Save messages to session if session_id is provided and user is authenticated
+            // Section F Compliance: Only store role and content - no emotional states, sentiment, or vulnerability tagging
             if (session_id && user) {
               try {
                 await supabase.from("chat_messages").insert({
                   session_id,
                   role: "user",
                   content: question,
+                  // No emotional_state, sentiment, or vulnerability fields (Section F)
                 });
 
                 await supabase.from("chat_messages").insert({
                   session_id,
                   role: "assistant",
                   content: fullResponse,
+                  // No emotional_state, sentiment, or vulnerability fields (Section F)
                 });
 
                 await supabase
@@ -606,11 +1020,13 @@ Model Version: ${currentModelVersion}${trainingDataNote}${vectorStoreNote}`;
 
     // Set anonymous session cookie if needed
     if (anon && !user) {
-      headers["Set-Cookie"] = `qmf_anon_session=${anon}; Path=/; Max-Age=2592000; HttpOnly; SameSite=Lax`;
+      const secureFlag = process.env.NODE_ENV === 'production' ? '; Secure' : '';
+      headers["Set-Cookie"] = `qmf_anon_session=${anon}; Path=/; Max-Age=2592000; HttpOnly; SameSite=Lax${secureFlag}`;
     }
 
     return new Response(readable, { headers });
   } catch (error) {
+    if (error instanceof Response) throw error;
     console.error("API Error:", error);
     return new Response(
       JSON.stringify({

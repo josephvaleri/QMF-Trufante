@@ -1,12 +1,12 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { supaServer } from '@/lib/supabase/server';
+import { requireAdmin } from '@/lib/auth-helpers';
 import { openai } from '@/lib/openai';
 
 export async function POST(request: NextRequest) {
   try {
+    const user = await requireAdmin(request);
     const supabase = supaServer();
-
-    // TODO: Add auth/role check (Security Task 1)
 
     // Query vector_store_files for files to clean up
     // Files where is_active = false OR model_version is inactive AND file not referenced by any active version
@@ -125,6 +125,7 @@ export async function POST(request: NextRequest) {
       ...cleanupResults,
     });
   } catch (error) {
+    if (error instanceof Response) throw error;
     console.error('Error in vector store cleanup:', error);
     return NextResponse.json(
       { error: 'Internal server error', details: error instanceof Error ? error.message : 'Unknown error' },

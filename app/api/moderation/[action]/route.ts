@@ -1,6 +1,7 @@
 import { NextRequest, NextResponse } from 'next/server';
-import { createServerClient } from '@supabase/ssr';
-import { cookies } from 'next/headers';
+import { requireModerator } from '@/lib/auth-helpers';
+import { rateLimit } from '@/lib/rate-limit';
+import { supaServer } from '@/lib/supabase/server';
 import { upsertCuratedQnA } from '@/lib/curated-qna';
 import { isFeatureEnabled } from '@/lib/feature-flags';
 import { trackVectorStoreFile } from '@/lib/knowledge-pack';
@@ -15,43 +16,12 @@ export async function POST(
     const { action } = await params;
     console.log('Action:', action);
     
-    // Create Supabase client with cookies for API routes
-    const cookieStore = await cookies();
-    const supabase = createServerClient(
-      process.env.NEXT_PUBLIC_SUPABASE_URL!,
-      process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY!,
-      {
-        cookies: {
-          get(name: string) {
-            return cookieStore.get(name)?.value;
-          },
-          set(name: string, value: string, options: any) {
-            // No-op for API routes
-          },
-          remove(name: string, options: any) {
-            // No-op for API routes
-          },
-        },
-      }
-    );
+    const user = await requireModerator(request);
     
-    const { data: { user }, error: authError } = await supabase.auth.getUser();
-    console.log('Auth check result:', { user: !!user, authError });
-
-    if (authError || !user) {
-      return NextResponse.json({ error: 'Unauthorized' }, { status: 401 });
-    }
-
-    // Check if user is moderator or admin
-    const { data: profile, error: profileError } = await supabase
-      .from('profiles')
-      .select('role')
-      .eq('user_id', user.id)
-      .single();
-
-    if (profileError || !profile || (profile.role !== 'moderator' && profile.role !== 'admin')) {
-      return NextResponse.json({ error: 'Access denied' }, { status: 403 });
-    }
+    // Rate limiting: 200 requests/hour per user
+    await rateLimit(`moderation:${user.id}`, 200, 60 * 60 * 1000); // 200 requests per hour
+    
+    const supabase = supaServer();
 
     const { qnaId, editedAnswer, moderatorNotes } = await request.json();
     console.log('Moderation action request:', { action, qnaId, editedAnswer: !!editedAnswer, moderatorNotes: !!moderatorNotes });
@@ -281,6 +251,7 @@ export async function POST(
     return NextResponse.json({ success: true });
 
   } catch (error) {
+    if (error instanceof Response) throw error;
     console.error('Moderation API error:', error);
     return NextResponse.json({ 
       error: 'Internal server error',
