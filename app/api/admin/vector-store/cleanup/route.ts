@@ -86,10 +86,23 @@ export async function POST(request: NextRequest) {
           cleanupResults.errors.push(`Vector store deletion failed for ${file.file_id}`);
         }
 
-        // Delete from OpenAI files API
+        // Delete from OpenAI files API using REST API
         try {
-          await openai.files.del(file.file_id);
-          cleanupResults.deleted_from_openai++;
+          const fileDeleteResponse = await fetch(
+            `https://api.openai.com/v1/files/${file.file_id}`,
+            {
+              method: 'DELETE',
+              headers: {
+                'Authorization': `Bearer ${process.env.OPENAI_API_KEY}`,
+              },
+            }
+          );
+
+          if (fileDeleteResponse.ok) {
+            cleanupResults.deleted_from_openai++;
+          } else {
+            throw new Error(`Delete failed with status ${fileDeleteResponse.status}`);
+          }
         } catch (error) {
           console.warn(`Error deleting ${file.file_id} from OpenAI:`, error);
           cleanupResults.errors.push(`OpenAI file deletion failed for ${file.file_id}`);
