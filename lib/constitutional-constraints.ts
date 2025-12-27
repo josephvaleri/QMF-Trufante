@@ -64,7 +64,7 @@ const AUTHORITY_PATTERNS = [
 
 // Therapeutic Language
 const THERAPEUTIC_PATTERNS = [
-  /\bIt\s+sounds\s+like\s+you'?re\s+feeling\b/i,
+  /\bIt\s+sounds\s+like\s+you'?re\s+(feeling|experiencing|going\s+through)\b/i,
   /\blet'?s\s+work\s+through\s+this\b/i,
   /\bI'?m\s+sorry\s+you'?re\s+feeling\s+this\s+way\b/i,
   /\bThat\s+sounds\s+really\s+hard\b/i,
@@ -75,12 +75,23 @@ const THERAPEUTIC_PATTERNS = [
   /\bThat\s+must\s+be\s+(difficult|challenging|hard)\b/i,
 ];
 
+// Formal/Institutional Language (sounds like textbook or institution, not conversational)
+const FORMAL_INSTITUTIONAL_PATTERNS = [
+  /\bIn\s+summary\b/i,
+  /\bTo\s+summarize\b/i,
+  /\bIn\s+conclusion\b/i,
+  /\bTo\s+conclude\b/i,
+  /\bIn\s+essence\b/i,
+  /\bIn\s+short\b/i,
+];
+
 // Permission-Seeking Escalation (only therapy-shaped invites, not pragmatic questions)
 const PERMISSION_SEEKING_PATTERNS = [
-  /\bWould\s+you\s+like\s+to\s+(share\s+more|open\s+up|talk\s+about\s+(your\s+)?feelings|explore\s+(that|this|it))\s+more\??\b/i,
+  /\bWould\s+you\s+like\s+to\s+(share\s+more|open\s+up|talk\s+about\s+(your\s+)?feelings|explore\s+(that|this|it)|dive\s+deeper)\s*(more|further|into)?\??\b/i,
   /\bCan\s+you\s+tell\s+me\s+more\s+about\s+that\??\b/i,
   /\bWould\s+you\s+like\s+to\s+explore\s+(that|this|it)\s+(further|more)\??\b/i,
   /\bHow\s+does\s+that\s+make\s+you\s+feel\??\b/i,
+  /\bIf\s+you'?re\s+open\s+to\s+it\b/i,
 ];
 
 // Proactive Faith
@@ -110,6 +121,7 @@ const ALL_VIOLATION_PATTERNS = [
   ...PERMISSION_SEEKING_PATTERNS.map(p => ({ pattern: p, category: 'permission-seeking', severity: 'block' as const })),
   ...PROACTIVE_FAITH_PATTERNS.map(p => ({ pattern: p, category: 'proactive-faith', severity: 'block' as const })),
   ...ROLE_CLAIM_PATTERNS.map(p => ({ pattern: p, category: 'role-claim', severity: 'block' as const })),
+  ...FORMAL_INSTITUTIONAL_PATTERNS.map(p => ({ pattern: p, category: 'formal-institutional', severity: 'block' as const })),
 ];
 
 /**
