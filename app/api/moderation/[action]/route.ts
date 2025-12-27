@@ -159,9 +159,19 @@ export async function POST(
                       purpose: 'assistants',
                     });
 
-                    await openai.beta.vectorStores.files.create(vectorStoreId, {
-                      file_id: file.id,
-                    });
+                    // Add to vector store using REST API (TypeScript types may not include this)
+                    await fetch(
+                      `https://api.openai.com/v1/vector_stores/${vectorStoreId}/files`,
+                      {
+                        method: 'POST',
+                        headers: {
+                          'Authorization': `Bearer ${process.env.OPENAI_API_KEY}`,
+                          'OpenAI-Beta': 'assistants=v2',
+                          'Content-Type': 'application/json',
+                        },
+                        body: JSON.stringify({ file_id: file.id }),
+                      }
+                    );
 
                     // Track in vector_store_files table
                     await trackVectorStoreFile(

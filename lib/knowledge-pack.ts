@@ -62,10 +62,23 @@ export async function uploadKnowledgePack(
       purpose: 'assistants',
     });
 
-    // Add to vector store
-    await openai.beta.vectorStores.files.create(vectorStoreId, {
-      file_id: file.id,
-    });
+    // Add to vector store using REST API (TypeScript types may not include this)
+    const addFileResponse = await fetch(
+      `https://api.openai.com/v1/vector_stores/${vectorStoreId}/files`,
+      {
+        method: 'POST',
+        headers: {
+          'Authorization': `Bearer ${process.env.OPENAI_API_KEY}`,
+          'OpenAI-Beta': 'assistants=v2',
+          'Content-Type': 'application/json',
+        },
+        body: JSON.stringify({ file_id: file.id }),
+      }
+    );
+
+    if (!addFileResponse.ok) {
+      throw new Error(`Failed to add file to vector store: ${addFileResponse.status}`);
+    }
 
     return file.id;
   } finally {
@@ -80,10 +93,24 @@ export async function uploadKnowledgePack(
  * Create a new vector store for a model version
  */
 export async function createVectorStoreForVersion(version: string): Promise<string> {
-  const vectorStore = await openai.beta.vectorStores.create({
-    name: `QMF v${version}`,
+  // Use REST API since TypeScript types may not include beta.vectorStores
+  const response = await fetch('https://api.openai.com/v1/vector_stores', {
+    method: 'POST',
+    headers: {
+      'Authorization': `Bearer ${process.env.OPENAI_API_KEY}`,
+      'OpenAI-Beta': 'assistants=v2',
+      'Content-Type': 'application/json',
+    },
+    body: JSON.stringify({
+      name: `QMF v${version}`,
+    }),
   });
 
+  if (!response.ok) {
+    throw new Error(`Failed to create vector store: ${response.status}`);
+  }
+
+  const vectorStore = await response.json();
   return vectorStore.id;
 }
 
